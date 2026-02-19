@@ -1,0 +1,308 @@
+version: "3.8"
+
+# Complete Home Server Stack for Linux Mint PC
+# Includes: Media automation, Jellyfin, Tunarr, Photo backup, Ad blocking
+# Estimated RAM usage: 4-6GB | CPU: Moderate | Storage: ~50GB for configs
+
+services:
+  #############################################################################
+  # VPN GATEWAY - Routes qBittorrent through Mullvad/NordVPN/PIA
+  #############################################################################
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    dns:
+      - "1.1.1.1"
+      - "8.8.8.8"
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "8080:8080" # qBittorrent WebUI (via VPN)
+      - "6881:6881" # qBittorrent incoming connections
+      - "6881:6881/udp"
+    environment:
+      # === CHOOSE YOUR VPN PROVIDER ===
+      # Uncomment ONE section below:
+
+      # --- Mullvad (Recommended) ---
+      - VPN_SERVICE_PROVIDER=mullvad
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
+      - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES}
+      - SERVER_CITIES=${SERVER_CITIES} # Change to nearest city
+      - DOT=off
+      - DNS_PLAINTEXT_ADDRESS=1.1.1.1
+      - BLOCK_MALICIOUS=off
+
+      # --- NordVPN ---
+      # - VPN_SERVICE_PROVIDER=nordvpn
+      # - VPN_TYPE=wireguard
+      # - WIREGUARD_PRIVATE_KEY=YOUR_NORDVPN_PRIVATE_KEY
+      # - SERVER_COUNTRIES=United States
+
+      # --- Private Internet Access ---
+      # - VPN_SERVICE_PROVIDER=private internet access
+      # - OPENVPN_USER=YOUR_PIA_USERNAME
+      # - OPENVPN_PASSWORD=YOUR_PIA_PASSWORD
+      # - SERVER_REGIONS=US East
+
+      # General settings
+      - TZ=${TZ} # Change to your timezone
+    volumes:
+      - gluetun-config:/gluetun
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  #############################################################################
+  # DOWNLOAD CLIENT - Routes through VPN
+  #############################################################################
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    network_mode: "service:gluetun" # ⚠️ Routes ALL traffic through VPN
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+      - WEBUI_PORT=8080
+    volumes:
+      - qbittorrent-config:/config
+      - ./downloads:/downloads
+    depends_on:
+      - gluetun
+    restart: unless-stopped
+
+  #############################################################################
+  # INDEXER MANAGER - Searches torrent sites
+  #############################################################################
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    ports:
+      - "9696:9696"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+    volumes:
+      - prowlarr-config:/config
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  #############################################################################
+  # JELLYSEERR - Media request management (browse & request movies/TV)
+  #############################################################################
+  jellyseerr:
+    image: fallenbagel/jellyseerr:latest
+    container_name: jellyseerr
+    ports:
+      - "5055:5055"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+      - LOG_LEVEL=debug
+    volumes:
+      - jellyseerr-config:/app/config
+    depends_on:
+      - jellyfin
+      - sonarr
+      - radarr
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  #############################################################################
+  # TV SHOW AUTOMATION
+  #############################################################################
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    ports:
+      - "8989:8989"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+    volumes:
+      - sonarr-config:/config
+      - ./media/tv:/tv
+      - ./downloads:/downloads
+    depends_on:
+      - prowlarr
+      - qbittorrent
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  #############################################################################
+  # MOVIE AUTOMATION
+  #############################################################################
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    ports:
+      - "7878:7878"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+    volumes:
+      - radarr-config:/config
+      - ./media/movies:/movies
+      - ./downloads:/downloads
+    depends_on:
+      - prowlarr
+      - qbittorrent
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  #############################################################################
+  # JELLYFIN - On-demand media server (like Netflix)
+  #############################################################################
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    ports:
+      - "8096:8096" # WebUI
+      - "8920:8920" # HTTPS (optional)
+      - "7359:7359/udp" # Local discovery
+      - "1900:1900/udp" # DLNA
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+    volumes:
+      - jellyfin-config:/config
+      - jellyfin-cache:/cache
+      - ./media:/data/media # All media in one folder
+    devices:
+      - /dev/dri:/dev/dri # Hardware transcoding (Intel/AMD GPU)
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  #############################################################################
+  # TUNARR - Linear TV channels (like cable)
+  #############################################################################
+  tunarr:
+    image: chrisbenincasa/tunarr:latest
+    container_name: tunarr
+    ports:
+      - "8000:8000"
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - tunarr-config:/config
+      - ./media:/media:ro # Same media as Jellyfin (read-only)
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  #############################################################################
+  # IMMICH - Photo backup & management (Google Photos alternative)
+  #############################################################################
+  # immich-server:
+  #   image: ghcr.io/immich-app/immich-server:release
+  #   container_name: immich-server
+  #   ports:
+  #     - "2283:3001"
+  #   environment:
+  #     - DB_HOSTNAME=immich-postgres
+  #     - DB_USERNAME=postgres
+  #     - DB_PASSWORD=postgres
+  #     - DB_DATABASE_NAME=immich
+  #     - REDIS_HOSTNAME=immich-redis
+  #     - TZ=America/New_York
+  #   volumes:
+  #     - ./media/photos:/usr/src/app/upload
+  #     - /etc/localtime:/etc/localtime:ro
+  #   depends_on:
+  #     - immich-postgres
+  #     - immich-redis
+  #   restart: unless-stopped
+  #   networks:
+  #     - media-network
+
+  # immich-machine-learning:
+  #   image: ghcr.io/immich-app/immich-machine-learning:release
+  #   container_name: immich-ml
+  #   environment:
+  #     - TZ=America/New_York
+  #   volumes:
+  #     - immich-ml-cache:/cache
+  #   restart: unless-stopped
+  #   networks:
+  #     - media-network
+
+  # immich-postgres:
+  #   image: tensorchord/pgvecto-rs:pg14-v0.2.0
+  #   container_name: immich-postgres
+  #   environment:
+  #     - POSTGRES_USER=postgres
+  #     - POSTGRES_PASSWORD=postgres
+  #     - POSTGRES_DB=immich
+  #   volumes:
+  #     - immich-db:/var/lib/postgresql/data
+  #   restart: unless-stopped
+  #   networks:
+  #     - media-network
+
+  # immich-redis:
+  #   image: redis:6.2-alpine
+  #   container_name: immich-redis
+  #   restart: unless-stopped
+  #   networks:
+  #     - media-network
+
+  #############################################################################
+  # PI-HOLE - Network-wide ad blocking
+  #############################################################################
+  # pihole:
+  #   image: pihole/pihole:latest
+  #   container_name: pihole
+  #   ports:
+  #     - "53:53/tcp" # DNS
+  #     - "53:53/udp"
+  #     - "80:80/tcp" # WebUI (change if port 80 conflicts)
+  #     - "443:443/tcp" # WebUI HTTPS
+  #   environment:
+  #     - TZ=America/New_York
+  #     - WEBPASSWORD=changeme # ⚠️ CHANGE THIS PASSWORD
+  #     - FTLCONF_LOCAL_IPV4=192.168.1.100 # ⚠️ Change to your PC's IP
+  #   volumes:
+  #     - pihole-config:/etc/pihole
+  #     - pihole-dnsmasq:/etc/dnsmasq.d
+  #   restart: unless-stopped
+  #   networks:
+  #     - media-network
+
+#############################################################################
+# NETWORKS
+#############################################################################
+networks:
+  media-network:
+    driver: bridge
+
+#############################################################################
+# VOLUMES
+#############################################################################
+volumes:
+  gluetun-config:
+  qbittorrent-config:
+  prowlarr-config:
+  sonarr-config:
+  radarr-config:
+  jellyseerr-config:
+  jellyfin-config:
+  jellyfin-cache:
+  tunarr-config:
+  # immich-db:
+  # immich-ml-cache:
+  # pihole-config:
+  # pihole-dnsmasq:
