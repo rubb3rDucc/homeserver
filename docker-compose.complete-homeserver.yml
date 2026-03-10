@@ -31,7 +31,7 @@ services:
       - VPN_TYPE=wireguard
       - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
       - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES}
-      - SERVER_CITIES=${SERVER_CITIES} # Change to nearest city
+      - SERVER_CITIES=Atlanta GA
       - DOT=off
       - DNS_PLAINTEXT_ADDRESS=1.1.1.1
       - BLOCK_MALICIOUS=off
