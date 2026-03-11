@@ -48,38 +48,37 @@ func (q *QBClient) login() error {
 	return nil
 }
 
-func (q *QBClient) PauseAll() error {
+func (q *QBClient) postAPI(endpoints []string, action string) error {
 	if err := q.login(); err != nil {
 		return err
 	}
 
 	data := url.Values{"hashes": {"all"}}
-	resp, err := q.client.PostForm(q.baseURL+"/api/v2/torrents/pause", data)
-	if err != nil {
-		return fmt.Errorf("qb pause: %w", err)
+	for _, endpoint := range endpoints {
+		resp, err := q.client.PostForm(q.baseURL+endpoint, data)
+		if err != nil {
+			return fmt.Errorf("qb %s: %w", action, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return nil
+		}
 	}
-	defer resp.Body.Close()
+	return fmt.Errorf("qb %s failed: all endpoints returned non-200", action)
+}
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("qb pause failed: status %d", resp.StatusCode)
-	}
-	return nil
+func (q *QBClient) PauseAll() error {
+	// v5.0+ uses "stop", older versions use "pause"
+	return q.postAPI([]string{
+		"/api/v2/torrents/stop",
+		"/api/v2/torrents/pause",
+	}, "pause")
 }
 
 func (q *QBClient) ResumeAll() error {
-	if err := q.login(); err != nil {
-		return err
-	}
-
-	data := url.Values{"hashes": {"all"}}
-	resp, err := q.client.PostForm(q.baseURL+"/api/v2/torrents/resume", data)
-	if err != nil {
-		return fmt.Errorf("qb resume: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("qb resume failed: status %d", resp.StatusCode)
-	}
-	return nil
+	// v5.0+ uses "start", older versions use "resume"
+	return q.postAPI([]string{
+		"/api/v2/torrents/start",
+		"/api/v2/torrents/resume",
+	}, "resume")
 }
