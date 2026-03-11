@@ -261,6 +261,28 @@ services:
   #     - media-network
 
   #############################################################################
+  # DISK MONITOR - Pauses torrents when disk is full
+  #############################################################################
+  diskmon:
+    build: ./diskmon
+    container_name: diskmon
+    environment:
+      - DISKMON_CHECK_PATH=/hostfs
+      - DISKMON_THRESHOLD=${DISKMON_THRESHOLD:-85}
+      - DISKMON_INTERVAL=${DISKMON_INTERVAL:-5m}
+      - DISKMON_QB_URL=http://gluetun:8080
+      - DISKMON_QB_USERNAME=${DISKMON_QB_USERNAME:-}
+      - DISKMON_QB_PASSWORD=${DISKMON_QB_PASSWORD:-}
+      - DISKMON_NTFY_URL=${DISKMON_NTFY_URL:-}
+    volumes:
+      - /:/hostfs:ro
+    depends_on:
+      - gluetun
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  #############################################################################
   # PI-HOLE - Network-wide ad blocking
   #############################################################################
   # pihole:
