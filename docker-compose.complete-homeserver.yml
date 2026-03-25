@@ -96,22 +96,52 @@ services:
   #############################################################################
   # JELLYSEERR - Media request management (browse & request movies/TV)
   #############################################################################
-  jellyseerr:
-    image: fallenbagel/jellyseerr:latest
-    container_name: jellyseerr
-    ports:
-      - "5055:5055"
+  # jellyseerr:
+  #   image: fallenbagel/jellyseerr:latest
+  #   container_name: jellyseerr
+  #   ports:
+  #     - "5055:5055"
+  #   environment:
+  #     - PUID=1000
+  #     - PGID=1000
+  #     - TZ=America/New_York
+  #     - LOG_LEVEL=debug
+  #   volumes:
+  #     - jellyseerr-config:/app/config
+  #   depends_on:
+  #     - jellyfin
+  #     - sonarr
+  #     - radarr
+  #   restart: unless-stopped
+  #   networks:
+  #     - media-network
+  #############################################################################
+  # SEERR - Media request management (browse & request movies/TV)
+  #############################################################################
+  seerr:
+    image: ghcr.io/seerr-team/seerr:latest
+    init: true
+    container_name: seerr
     environment:
       - PUID=1000
       - PGID=1000
-      - TZ=America/New_York
       - LOG_LEVEL=debug
-    volumes:
-      - jellyseerr-config:/app/config
+      - TZ=America/New_York
+      - PORT=5055 #optional
+    ports:
+      - 5055:5055
     depends_on:
       - jellyfin
       - sonarr
       - radarr
+    volumes:
+      - seerr-config:/app/config
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:5055/api/v1/status || exit 1
+      start_period: 20s
+      timeout: 3s
+      interval: 15s
+      retries: 3
     restart: unless-stopped
     networks:
       - media-network
