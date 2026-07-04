@@ -31,7 +31,12 @@ services:
       - VPN_TYPE=wireguard
       - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
       - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES}
-      - SERVER_CITIES=Atlanta GA
+      # Pin a known-good server instead of rotating by city (reduces reconnect flapping).
+      # If this host is ever retired, swap it or fall back to: SERVER_CITIES=Atlanta GA
+      - SERVER_HOSTNAMES=us-atl-wg-403
+      # Set MTU explicitly so gluetun skips path-MTU discovery (the source of the
+      # 1320-revert loop seen on 2026-06-04). 1320 is safe for Mullvad WireGuard.
+      - WIREGUARD_MTU=1320
       - DOT=off
       - DNS_PLAINTEXT_ADDRESS=1.1.1.1
       - BLOCK_MALICIOUS=off
@@ -73,7 +78,55 @@ services:
       - ./downloads:/downloads
     depends_on:
       - gluetun
+    # When gluetun restarts, qBittorrent's shared netns is destroyed and its WebUI
+    # dies (Radarr then gets "connection refused"). This healthcheck goes unhealthy
+    # when that happens; the deunhealth service below restarts qBittorrent so it
+    # re-attaches to gluetun's fresh network namespace.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -m 5 http://localhost:8080 >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 30s
+    labels:
+      - deunhealth.restart.on.unhealthy=true
     restart: unless-stopped
+
+  #############################################################################
+  # DEUNHEALTH - Auto-restarts containers that go unhealthy (e.g. qBittorrent
+  # when gluetun restarts and tears down the shared network namespace).
+  # Watches for the label: deunhealth.restart.on.unhealthy=true
+  #############################################################################
+  deunhealth:
+    image: qmcgaw/deunhealth:latest
+    container_name: deunhealth
+    network_mode: "none"
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  #############################################################################
+  # USENET DOWNLOAD CLIENT - SABnzbd (does NOT need the VPN)
+  # Usenet uses SSL directly to your paid provider; no peers = no IP exposure,
+  # so unlike qBittorrent this runs on the normal network for full speed.
+  #############################################################################
+  sabnzbd:
+    image: lscr.io/linuxserver/sabnzbd:latest
+    container_name: sabnzbd
+    ports:
+      - "8085:8080" # WebUI (8080 is taken by qBittorrent via gluetun)
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+    volumes:
+      - sabnzbd-config:/config
+      - ./downloads:/downloads # Same mount Radarr/Sonarr already see
+    restart: unless-stopped
+    networks:
+      - media-network
 
   #############################################################################
   # INDEXER MANAGER - Searches torrent sites
@@ -365,6 +418,7 @@ volumes:
   gluetun-config:
   qbittorrent-config:
   prowlarr-config:
+  sabnzbd-config:
   sonarr-config:
   radarr-config:
   jellyseerr-config:
