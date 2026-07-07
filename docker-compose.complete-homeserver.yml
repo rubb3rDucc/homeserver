@@ -293,8 +293,7 @@ services:
   # Feeds Jellyfin Live TV via its M3U + XMLTV endpoints (shown in ErsatzTV UI).
   #############################################################################
   ersatztv:
-    image: jasongdove/ersatztv:latest-vaapi # HW transcode (Intel/AMD iGPU, same as Jellyfin)
-    # image: jasongdove/ersatztv:latest      # <-- swap to this (and remove 'devices:') for software-only
+    image: jasongdove/ersatztv:latest # unified image; auto-detects VAAPI/QSV via /dev/dri below
     container_name: ersatztv
     ports:
       - "8409:8409" # WebUI + M3U/XMLTV endpoints
