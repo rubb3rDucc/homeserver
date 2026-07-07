@@ -29,9 +29,9 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --no-audit --no-fund
 
-# Pre-download the Chrome Headless Shell Remotion renders with, so the first
-# render doesn't stall fetching it.
-RUN npx remotion browser ensure
+# Pre-download the Chrome Headless Shell that @remotion/renderer uses, so the
+# first render doesn't stall fetching it. Programmatic API (no CLI to resolve).
+RUN node -e "import('@remotion/renderer').then(m => m.ensureBrowser()).then(() => console.log('chromium ready')).catch(e => { console.error(e); process.exit(1); })"
 
 COPY . .
 
