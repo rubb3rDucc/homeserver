@@ -288,6 +288,107 @@ services:
       - media-network
 
   #############################################################################
+  # ERSATZTV - Advanced linear TV channels (commercials, bumpers, watermarks,
+  # deterministic scheduling). WebUI: http://localhost:8409
+  # Feeds Jellyfin Live TV via its M3U + XMLTV endpoints (shown in ErsatzTV UI).
+  #############################################################################
+  ersatztv:
+    image: jasongdove/ersatztv:latest-vaapi # HW transcode (Intel/AMD iGPU, same as Jellyfin)
+    # image: jasongdove/ersatztv:latest      # <-- swap to this (and remove 'devices:') for software-only
+    container_name: ersatztv
+    ports:
+      - "8409:8409" # WebUI + M3U/XMLTV endpoints
+    environment:
+      - TZ=America/New_York
+    devices:
+      - /dev/dri:/dev/dri # HW transcoding (drop this if you use the software 'latest' tag)
+    volumes:
+      - ersatztv-config:/root/.local/share/ersatztv
+      - ./media:/media:ro # Same shared media as Jellyfin/Tunarr (read-only)
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  #############################################################################
+  # PINCHFLAT - yt-dlp automation: subscribe to Vevo/artist channels & playlists
+  # to auto-download and keep music videos + commercials fresh.
+  # WebUI: http://localhost:8945  |  Source archive.org / RetroJunk / YouTube.
+  #############################################################################
+  pinchflat:
+    image: ghcr.io/kieraneglin/pinchflat:latest
+    container_name: pinchflat
+    ports:
+      - "8945:8945"
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - pinchflat-config:/config
+      # TV-station content lands here, kept separate from Jellyfin's movies/tv.
+      # Configure Media Sources inside Pinchflat:
+      #   music videos  -> /downloads/musicvideos       (ErsatzTV reads directly)
+      #   commercials   -> /downloads/incoming/commercials  (station-processor cleans them up)
+      # ErsatzTV reads these via its read-only ./media mount above.
+      - ./media/station:/downloads
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  #############################################################################
+  # STATION-PROCESSOR - Ingest pipeline for filler content.
+  # Watches ./media/station/incoming/*, splits commercial compilations on
+  # black frames, normalizes loudness + resolution/fps, and outputs
+  # channel-ready spots to ./media/station/library/* for ErsatzTV filler.
+  #   incoming/commercials -> split + normalize
+  #   incoming/bumpers     -> normalize only
+  # Originals are archived to ./media/station/processed (nothing is deleted).
+  #############################################################################
+  station-processor:
+    build: ./station-processor
+    image: homeserver/station-processor:latest
+    container_name: station-processor
+    environment:
+      - TZ=America/New_York
+      - POLL_INTERVAL=60 # seconds between folder scans
+      - TARGET_WIDTH=1920 # normalize everything to one resolution...
+      - TARGET_HEIGHT=1080
+      - TARGET_FPS=30 # ...and one framerate, so filler never letterboxes/judders
+      - LOUDNORM_I=-16 # target loudness (LUFS) - match whatever your shows sit at
+      - LOUDNORM_TP=-1.5 # max true peak (dBTP)
+      - LOUDNORM_LRA=11 # loudness range
+      - MIN_SPOT_SECONDS=5 # drop split fragments shorter than this
+      - MAX_SPOT_SECONDS=180 # drop split fragments longer than this
+    volumes:
+      - ./media/station:/station # incoming/, library/, processed/, logs/
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  #############################################################################
+  # RENDER-LANE - Remotion graphics generator. Reads the ErsatzTV schedule and
+  # renders a "now/next/later" junction card on an interval into the station
+  # library. Point an ErsatzTV filler preset at ./media/station/library/junctions.
+  # (Idents + MTV nameplates will be added as more Remotion compositions later.)
+  #############################################################################
+  render-lane:
+    build: ./render-lane
+    image: homeserver/render-lane:latest
+    container_name: render-lane
+    environment:
+      - TZ=America/New_York
+      - ERSATZTV_URL=http://ersatztv:8409
+      - CHANNEL=1 # ErsatzTV channel number OR display-name to build cards for
+      - INTERVAL=300 # seconds between re-renders (schedule rolls forward)
+      - ACCENT=#e50914 # brand accent color for the card
+      - OUTPUT=/station/library/junctions/now-next-later.mp4
+    volumes:
+      - ./media/station:/station
+    depends_on:
+      - ersatztv
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  #############################################################################
   # IMMICH - Photo backup & management (Google Photos alternative)
   #############################################################################
   # immich-server:
@@ -425,6 +526,8 @@ volumes:
   jellyfin-config:
   jellyfin-cache:
   tunarr-config:
+  ersatztv-config:
+  pinchflat-config:
   seerr-config:
   uptime-kuma-data:
   # immich-db:
