@@ -376,14 +376,42 @@ services:
     environment:
       - TZ=America/New_York
       - ERSATZTV_URL=http://ersatztv:8409
-      - CHANNEL=1 # ErsatzTV channel number OR display-name to build cards for
+      - CHANNEL=1 # ErsatzTV channel (number OR display-name) for now/next/later
+      - MOVIE_CHANNEL=1 # channel used for the Feature Presentation movie card
       - INTERVAL=300 # seconds between re-renders (schedule rolls forward)
-      - ACCENT=#e50914 # brand accent color for the card
+      - ACCENT=#e50914 # brand accent color for all cards
+      - IDENT_NAME=My Channel # wordmark shown in the channel ident
+      - IDENT_TAGLINE= # optional tagline under the ident (blank = hidden)
       - OUTPUT=/station/library/junctions/now-next-later.mp4
+      - FEATURE_OUTPUT=/station/library/feature/feature-presentation.mp4
+      - IDENT_OUTPUT=/station/library/idents/ident.mp4
     volumes:
       - ./media/station:/station
     depends_on:
       - ersatztv
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  #############################################################################
+  # RENDER-STUDIO - Remotion Studio (visual editor) for restyling idents/cards
+  # in a browser at http://<server-ip>:3000. Optional: only starts when asked:
+  #   docker compose --profile studio up -d render-studio
+  # Bind-mounts ./render-lane so edits persist to the repo (commit them there).
+  #############################################################################
+  render-studio:
+    build: ./render-lane
+    image: homeserver/render-lane:latest
+    container_name: render-studio
+    profiles: ["studio"]
+    ports:
+      - "3000:3000"
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - ./render-lane:/app # live source so Studio edits reflect immediately
+      - /app/node_modules # keep the image's installed deps (don't shadow them)
+    entrypoint: ["npx", "remotion", "studio", "--host", "0.0.0.0", "--port", "3000"]
     restart: unless-stopped
     networks:
       - media-network
