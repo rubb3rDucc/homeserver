@@ -49,6 +49,8 @@ const JELLYFIN_API_KEY = process.env.JELLYFIN_API_KEY || "";
 
 const OUTPUT = process.env.OUTPUT || "/station/library/junctions/now-next-later.mp4";
 const FEATURE_DIR = process.env.FEATURE_DIR || "/station/library/feature";
+// Render the feature card at a fraction of 1080p to save CPU (0.6667 -> 720p).
+const FEATURE_SCALE = parseFloat(process.env.FEATURE_SCALE || "0.6667");
 const IDENT_OUTPUT = process.env.IDENT_OUTPUT || "/station/library/idents/ident.mp4";
 
 const IDENT_NAME = process.env.IDENT_NAME || "My Channel";
@@ -289,7 +291,7 @@ async function getServeUrl() {
   return serveUrl;
 }
 
-async function renderComp(url, id, inputProps, outPath) {
+async function renderComp(url, id, inputProps, outPath, opts = {}) {
   const composition = await selectComposition({ serveUrl: url, id, inputProps });
   await fs.mkdir(path.dirname(outPath), { recursive: true });
   const tmp = `${outPath}.tmp.mp4`; // same dir -> atomic rename, never serve a half file
@@ -299,6 +301,7 @@ async function renderComp(url, id, inputProps, outPath) {
     codec: "h264",
     outputLocation: tmp,
     inputProps,
+    scale: opts.scale, // <1 renders at lower resolution (cheaper), same layout
   });
   await fs.rename(tmp, outPath);
 }
@@ -352,7 +355,8 @@ async function renderCards() {
           url,
           "FeaturePresentation",
           { channelName, accent: ACCENT, ...card, token, backgroundSrc, musicSrc },
-          path.join(FEATURE_DIR, `feature-${ch}.mp4`)
+          path.join(FEATURE_DIR, `feature-${ch}.mp4`),
+          { scale: FEATURE_SCALE }
         );
         console.log(
           `${new Date().toISOString()}  feature [${channelName}]  ` +
