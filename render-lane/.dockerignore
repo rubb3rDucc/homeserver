@@ -2,3 +2,16 @@ node_modules/
 npm-debug.log
 README.md
 .git
+.gitignore
+.DS_Store
+previews/
+
+# local test media — not needed in the image (production uses the asset server)
+public/*.mp4
+public/*.mov
+public/*.webm
+public/*.mkv
+public/*.mp3
+public/*.m4a
+public/*.wav
+public/*.flac

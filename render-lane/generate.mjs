@@ -15,12 +15,33 @@ import { XMLParser } from "fast-xml-parser";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs/promises";
+import http from "node:http";
+import { createReadStream } from "node:fs";
 
 const ERSATZTV_URL = process.env.ERSATZTV_URL || "http://ersatztv:8409";
 const CHANNEL = process.env.CHANNEL || "1"; // channel for now/next/later
 const MOVIE_CHANNEL = process.env.MOVIE_CHANNEL || CHANNEL; // channel for feature card
 const INTERVAL = parseInt(process.env.INTERVAL || "300", 10);
 const ACCENT = process.env.ACCENT || "#e50914";
+
+// Optional CN City assets for the junction card. Any URL Remotion can fetch, or
+// a staticFile() path under public/. Empty -> the card uses its CSS fallback.
+// BROLL_SRC pins one clip; otherwise a random clip from BROLL_DIR plays each
+// render (drop .mp4/.webm/.mov files in ./media/station/broll on the host).
+const BROLL_SRC = process.env.BROLL_SRC || "";
+const BROLL_DIR = process.env.BROLL_DIR || "/station/broll";
+const MUSIC_SRC = process.env.MUSIC_SRC || "";
+const MUSIC_DIR = process.env.MUSIC_DIR || "/station/music";
+const ASSET_PORT = parseInt(process.env.ASSET_PORT || "8788", 10);
+const VOICEOVER_SRC = process.env.VOICEOVER_SRC || "";
+const VIDEO_RE = /\.(mp4|webm|mov|mkv)$/i;
+const AUDIO_RE = /\.(mp3|m4a|aac|ogg|opus|wav|flac)$/i;
+
+// Jellyfin: source each token's artwork (show Logo, else poster) by title.
+// Reachable over the shared media-network as http://jellyfin:8096. Needs an API
+// key (Jellyfin dashboard -> API Keys). No key -> tokens fall back to initials.
+const JELLYFIN_URL = process.env.JELLYFIN_URL || "http://jellyfin:8096";
+const JELLYFIN_API_KEY = process.env.JELLYFIN_API_KEY || "";
 
 const OUTPUT = process.env.OUTPUT || "/station/library/junctions/now-next-later.mp4";
 const FEATURE_OUTPUT =
@@ -32,6 +53,56 @@ const IDENT_TAGLINE = process.env.IDENT_TAGLINE || "";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---- Asset rotation (B-roll + music) -------------------------------------- //
+// OffthreadVideo / Audio need http URLs, so serve the asset folders over
+// loopback. Chromium renders in this same container, so 127.0.0.1 is reachable.
+// URLs look like http://127.0.0.1:PORT/<kind>/<file> where kind = broll|music.
+const ASSET_DIRS = { broll: BROLL_DIR, music: MUSIC_DIR };
+
+function startAssetServer() {
+  const server = http.createServer((req, res) => {
+    const parts = decodeURIComponent((req.url || "").split("?")[0])
+      .replace(/^\//, "")
+      .split("/");
+    const dir = ASSET_DIRS[parts[0]];
+    const name = parts[1];
+    if (!dir || !name || name.includes("..") || !(VIDEO_RE.test(name) || AUDIO_RE.test(name))) {
+      res.writeHead(404);
+      return res.end();
+    }
+    const stream = createReadStream(path.join(dir, name));
+    stream.on("error", () => {
+      res.writeHead(404);
+      res.end();
+    });
+    res.writeHead(200, {
+      "Content-Type": AUDIO_RE.test(name) ? "audio/mpeg" : "video/mp4",
+    });
+    stream.pipe(res);
+  });
+  server.on("error", (e) => console.warn("asset server error:", e.message));
+  server.listen(ASSET_PORT, "127.0.0.1", () =>
+    console.log(`asset server on http://127.0.0.1:${ASSET_PORT} (broll=${BROLL_DIR} music=${MUSIC_DIR})`)
+  );
+  return server;
+}
+
+// Pick a random file for this render (re-listed each time, so uploads are picked
+// up). `explicit` (BROLL_SRC/MUSIC_SRC) pins one instead. Empty -> asset unused.
+async function pickAsset(kind, dir, re, explicit) {
+  if (explicit) return explicit;
+  try {
+    const files = (await fs.readdir(dir)).filter((f) => re.test(f));
+    if (!files.length) return "";
+    const pick = files[Math.floor(Math.random() * files.length)];
+    return `http://127.0.0.1:${ASSET_PORT}/${kind}/${encodeURIComponent(pick)}`;
+  } catch {
+    return ""; // dir missing -> asset simply unused
+  }
+}
+const pickBroll = () => pickAsset("broll", BROLL_DIR, VIDEO_RE, BROLL_SRC);
+const pickMusic = () => pickAsset("music", MUSIC_DIR, AUDIO_RE, MUSIC_SRC);
 
 // ---- XMLTV helpers -------------------------------------------------------- //
 function parseXmltvTime(s) {
@@ -93,6 +164,7 @@ async function getSchedule(channel) {
         year: p.date ? String(text(p.date)).slice(0, 4) : "",
         rating,
         runtime,
+        specs: featureSpecs(p),
       };
     })
     .filter((p) => p.start && p.stop)
@@ -111,6 +183,30 @@ function currentIndex(items) {
   return idx;
 }
 
+// The upcoming programme (the feature the pre-roll precedes). Falls back to the
+// current one if nothing is scheduled after now.
+function nextIndex(items) {
+  const now = new Date();
+  const idx = items.findIndex((p) => p.start > now);
+  return idx === -1 ? currentIndex(items) : idx;
+}
+
+// Best-effort format/caption/language spec rows from XMLTV. ErsatzTV may not
+// populate these; when empty, the card shows the classic HBO trio by default.
+function featureSpecs(p) {
+  const specs = [];
+  const audio = String(text(p.audio?.stereo) ?? "").toLowerCase();
+  const subs = arr(p.subtitles);
+  const langs = [text(p.language), text(p["orig-language"]), ...subs.map((s) => s && s.language)]
+    .map((x) => String(x ?? "").toLowerCase());
+  if (/surround|5\.1|dolby|digital/.test(audio))
+    specs.push({ code: "dolby", lines: ["DOLBY DIGITAL 5.1 SOUND", "WHERE AVAILABLE"] });
+  if (subs.length) specs.push({ code: "cc", lines: ["CLOSED CAPTIONED"] });
+  if (langs.some((l) => /span|español|\besp?\b/.test(l)))
+    specs.push({ code: "esp", lines: ["EN ESPAÑOL"] });
+  return specs;
+}
+
 function pickNowNextLater(items) {
   const idx = currentIndex(items);
   const fmt = (d) =>
@@ -122,14 +218,61 @@ function pickNowNextLater(items) {
   return { now: at(idx), next: at(idx + 1), later: at(idx + 2) };
 }
 
+// ---- Jellyfin token artwork ----------------------------------------------- //
+// Match a programme title to a Jellyfin item and return its Logo (else Primary)
+// image URL for the round token. Results are cached by title (art is stable).
+const tokenCache = new Map();
+async function resolveToken(title) {
+  if (!JELLYFIN_API_KEY || !title || title === "—") return "";
+  if (tokenCache.has(title)) return tokenCache.get(title);
+
+  let url = "";
+  try {
+    const q = new URLSearchParams({
+      searchTerm: title,
+      IncludeItemTypes: "Series,Movie",
+      Recursive: "true",
+      Limit: "1",
+      api_key: JELLYFIN_API_KEY,
+    });
+    const res = await fetch(`${JELLYFIN_URL}/Items?${q}`);
+    if (res.ok) {
+      const item = ((await res.json()).Items || [])[0];
+      const type = item?.ImageTags?.Logo
+        ? "Logo"
+        : item?.ImageTags?.Primary
+        ? "Primary"
+        : "";
+      if (item && type) {
+        url = `${JELLYFIN_URL}/Items/${item.Id}/Images/${type}?api_key=${JELLYFIN_API_KEY}`;
+      }
+    }
+  } catch (e) {
+    console.warn(`jellyfin token lookup failed for "${title}": ${e.message}`);
+  }
+  tokenCache.set(title, url);
+  return url;
+}
+
+// Attach a token image URL to each now/next/later slot (in place).
+async function attachTokens(slots) {
+  await Promise.all(
+    [slots.now, slots.next, slots.later].map(async (slot) => {
+      slot.token = await resolveToken(slot.title);
+    })
+  );
+  return slots;
+}
+
 function pickMovieCard(items) {
   if (!items.length) return null;
-  const it = items[currentIndex(items)];
+  const it = items[nextIndex(items)]; // the upcoming feature
   return {
     title: it.title,
     year: it.year || "",
     rating: it.rating || "",
     runtime: fmtRuntime(it.runtime),
+    specs: it.specs || [],
   };
 }
 
@@ -164,8 +307,22 @@ async function renderCards() {
   try {
     const { channelName, items } = await getSchedule(CHANNEL);
     if (items.length) {
-      const slots = pickNowNextLater(items);
-      await renderComp(url, "NowNextLater", { channelName, accent: ACCENT, ...slots }, OUTPUT);
+      const slots = await attachTokens(pickNowNextLater(items));
+      const backgroundSrc = await pickBroll();
+      const musicSrc = await pickMusic();
+      await renderComp(
+        url,
+        "NowNextLater",
+        {
+          channelName,
+          accent: ACCENT,
+          ...slots,
+          backgroundSrc,
+          musicSrc,
+          voiceoverSrc: VOICEOVER_SRC,
+        },
+        OUTPUT
+      );
       console.log(
         `${new Date().toISOString()}  junction [${channelName}]  ` +
           `NOW: ${slots.now.title} | NEXT: ${slots.next.title} | LATER: ${slots.later.title}`
@@ -182,10 +339,13 @@ async function renderCards() {
     const { channelName, items } = await getSchedule(MOVIE_CHANNEL);
     const card = pickMovieCard(items);
     if (card) {
+      const token = await resolveToken(card.title);
+      const backgroundSrc = await pickBroll();
+      const musicSrc = await pickMusic();
       await renderComp(
         url,
         "FeaturePresentation",
-        { channelName, accent: ACCENT, ...card },
+        { channelName, accent: ACCENT, ...card, token, backgroundSrc, musicSrc },
         FEATURE_OUTPUT
       );
       console.log(
@@ -205,19 +365,11 @@ async function main() {
     `render-lane up. channel="${CHANNEL}" movieChannel="${MOVIE_CHANNEL}" interval=${INTERVAL}s`
   );
 
-  // Static ident: render once at startup (no schedule needed).
-  try {
-    const url = await getServeUrl();
-    await renderComp(
-      url,
-      "Ident",
-      { channelName: IDENT_NAME, accent: ACCENT, tagline: IDENT_TAGLINE },
-      IDENT_OUTPUT
-    );
-    console.log(`rendered ident -> ${IDENT_OUTPUT}`);
-  } catch (e) {
-    console.error("ident error:", e.message);
-  }
+  // Serve B-roll + music folders over loopback so Remotion can fetch them.
+  if (!BROLL_SRC || !MUSIC_SRC) startAssetServer();
+
+  // Warm the Remotion bundle once up front (idents are downloaded separately).
+  await getServeUrl();
 
   for (;;) {
     await renderCards();

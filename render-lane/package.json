@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@remotion/bundler": "4.0.240",
+    "@remotion/layout-utils": "^4.0.240",
     "@remotion/renderer": "4.0.240",
     "fast-xml-parser": "4.5.0",
     "react": "18.3.1",

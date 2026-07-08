@@ -1,0 +1,14 @@
+node_modules/
+previews/
+.DS_Store
+
+# large local media — production pulls B-roll/music from ./media/station via the
+# asset server, not from here
+public/*.mp4
+public/*.mov
+public/*.webm
+public/*.mkv
+public/*.mp3
+public/*.m4a
+public/*.wav
+public/*.flac
