@@ -19,8 +19,12 @@ import http from "node:http";
 import { createReadStream } from "node:fs";
 
 const ERSATZTV_URL = process.env.ERSATZTV_URL || "http://ersatztv:8409";
-const CHANNEL = process.env.CHANNEL || "1"; // channel for now/next/later
-const MOVIE_CHANNEL = process.env.MOVIE_CHANNEL || CHANNEL; // channel for feature card
+const CHANNEL = process.env.CHANNEL || ""; // channel for now/next/later ("" = skip)
+// One or more channels for the feature card (comma-separated) -> one card each.
+const MOVIE_CHANNELS = (process.env.MOVIE_CHANNEL || CHANNEL || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 const INTERVAL = parseInt(process.env.INTERVAL || "300", 10);
 const ACCENT = process.env.ACCENT || "#e50914";
 
@@ -44,8 +48,7 @@ const JELLYFIN_URL = process.env.JELLYFIN_URL || "http://jellyfin:8096";
 const JELLYFIN_API_KEY = process.env.JELLYFIN_API_KEY || "";
 
 const OUTPUT = process.env.OUTPUT || "/station/library/junctions/now-next-later.mp4";
-const FEATURE_OUTPUT =
-  process.env.FEATURE_OUTPUT || "/station/library/feature/feature-presentation.mp4";
+const FEATURE_DIR = process.env.FEATURE_DIR || "/station/library/feature";
 const IDENT_OUTPUT = process.env.IDENT_OUTPUT || "/station/library/idents/ident.mp4";
 
 const IDENT_NAME = process.env.IDENT_NAME || "My Channel";
@@ -303,60 +306,64 @@ async function renderComp(url, id, inputProps, outPath) {
 async function renderCards() {
   const url = await getServeUrl();
 
-  // now / next / later
-  try {
-    const { channelName, items } = await getSchedule(CHANNEL);
-    if (items.length) {
-      const slots = await attachTokens(pickNowNextLater(items));
-      const backgroundSrc = await pickBroll();
-      const musicSrc = await pickMusic();
-      await renderComp(
-        url,
-        "NowNextLater",
-        {
-          channelName,
-          accent: ACCENT,
-          ...slots,
-          backgroundSrc,
-          musicSrc,
-          voiceoverSrc: VOICEOVER_SRC,
-        },
-        OUTPUT
-      );
-      console.log(
-        `${new Date().toISOString()}  junction [${channelName}]  ` +
-          `NOW: ${slots.now.title} | NEXT: ${slots.next.title} | LATER: ${slots.later.title}`
-      );
-    } else {
-      console.warn(`now/next/later: no programmes for channel "${CHANNEL}"`);
+  // now / next / later (skipped while CHANNEL is blank)
+  if (CHANNEL) {
+    try {
+      const { channelName, items } = await getSchedule(CHANNEL);
+      if (items.length) {
+        const slots = await attachTokens(pickNowNextLater(items));
+        const backgroundSrc = await pickBroll();
+        const musicSrc = await pickMusic();
+        await renderComp(
+          url,
+          "NowNextLater",
+          {
+            channelName,
+            accent: ACCENT,
+            ...slots,
+            backgroundSrc,
+            musicSrc,
+            voiceoverSrc: VOICEOVER_SRC,
+          },
+          OUTPUT
+        );
+        console.log(
+          `${new Date().toISOString()}  junction [${channelName}]  ` +
+            `NOW: ${slots.now.title} | NEXT: ${slots.next.title} | LATER: ${slots.later.title}`
+        );
+      } else {
+        console.warn(`now/next/later: no programmes for channel "${CHANNEL}"`);
+      }
+    } catch (e) {
+      console.error("now/next/later error:", e.message);
     }
-  } catch (e) {
-    console.error("now/next/later error:", e.message);
   }
 
-  // feature presentation (movie channel)
-  try {
-    const { channelName, items } = await getSchedule(MOVIE_CHANNEL);
-    const card = pickMovieCard(items);
-    if (card) {
-      const token = await resolveToken(card.title);
-      const backgroundSrc = await pickBroll();
-      const musicSrc = await pickMusic();
-      await renderComp(
-        url,
-        "FeaturePresentation",
-        { channelName, accent: ACCENT, ...card, token, backgroundSrc, musicSrc },
-        FEATURE_OUTPUT
-      );
-      console.log(
-        `${new Date().toISOString()}  feature [${channelName}]  ` +
-          `${card.title} (${[card.rating, card.year, card.runtime].filter(Boolean).join(" · ")})`
-      );
-    } else {
-      console.warn(`feature: no programmes for channel "${MOVIE_CHANNEL}"`);
+  // feature presentation — one card per movie channel, output feature-<ch>.mp4
+  for (const ch of MOVIE_CHANNELS) {
+    try {
+      const { channelName, items } = await getSchedule(ch);
+      const card = pickMovieCard(items);
+      if (card) {
+        const token = await resolveToken(card.title);
+        const backgroundSrc = await pickBroll();
+        const musicSrc = await pickMusic();
+        await renderComp(
+          url,
+          "FeaturePresentation",
+          { channelName, accent: ACCENT, ...card, token, backgroundSrc, musicSrc },
+          path.join(FEATURE_DIR, `feature-${ch}.mp4`)
+        );
+        console.log(
+          `${new Date().toISOString()}  feature [${channelName}]  ` +
+            `${card.title} (${[card.rating, card.year, card.runtime].filter(Boolean).join(" · ")})`
+        );
+      } else {
+        console.warn(`feature: no programmes for channel "${ch}"`);
+      }
+    } catch (e) {
+      console.error(`feature error [${ch}]:`, e.message);
     }
-  } catch (e) {
-    console.error("feature error:", e.message);
   }
 }
 

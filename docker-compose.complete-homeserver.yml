@@ -381,27 +381,26 @@ services:
     environment:
       - TZ=America/New_York
       - ERSATZTV_URL=http://ersatztv:8409
-      - CHANNEL=1 # ErsatzTV channel (number OR display-name) for now/next/later
-      - MOVIE_CHANNEL=1 # channel used for the Feature Presentation movie card
+      # Channels come from a gitignored .env next to this compose file:
+      #   STATION_CHANNEL=          (now/next/later channel; blank = skip)
+      #   STATION_MOVIE_CHANNEL=2,3,4,6   (feature card, one per channel)
+      - CHANNEL=${STATION_CHANNEL:-}
+      - MOVIE_CHANNEL=${STATION_MOVIE_CHANNEL:-}
       - INTERVAL=300 # seconds between re-renders (schedule rolls forward)
       - ACCENT=#e50914 # brand accent color for all cards
-      - IDENT_NAME=My Channel # wordmark shown in the channel ident
-      - IDENT_TAGLINE= # optional tagline under the ident (blank = hidden)
-      # Jellyfin token artwork for now/next/later. Fill JELLYFIN_API_KEY from
-      # Jellyfin Dashboard -> API Keys; blank = tokens fall back to initials.
+      # Jellyfin token artwork. Put JELLYFIN_API_KEY in that same .env (never
+      # committed); blank = tokens fall back to initials.
       - JELLYFIN_URL=http://jellyfin:8096
-      - JELLYFIN_API_KEY= # <-- paste a Jellyfin API key to enable show logos
-      # B-roll + instrumental music for the junction card. Drop clips in
-      # ./media/station/broll and tracks in ./media/station/music (host) ->
-      # /station/{broll,music} (container); a random one of each plays per
-      # render. Set BROLL_SRC / MUSIC_SRC to a single URL/path to pin one.
+      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
+      # B-roll + instrumental music. Drop clips in ./media/station/broll and
+      # tracks in ./media/station/music (host) -> /station/{broll,music}
+      # (container); a random one of each plays per render.
       - BROLL_DIR=/station/broll
       - MUSIC_DIR=/station/music
       # - BROLL_SRC=
       # - MUSIC_SRC=
       - OUTPUT=/station/library/junctions/now-next-later.mp4
-      - FEATURE_OUTPUT=/station/library/feature/feature-presentation.mp4
-      - IDENT_OUTPUT=/station/library/idents/ident.mp4
+      - FEATURE_DIR=/station/library/feature
     volumes:
       - ./media/station:/station
     depends_on:
