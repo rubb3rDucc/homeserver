@@ -389,11 +389,14 @@ services:
       #   STATION_MOVIE_CHANNEL=2,3,4,6   (feature card, one per channel)
       - CHANNEL=${STATION_CHANNEL:-}
       - MOVIE_CHANNEL=${STATION_MOVIE_CHANNEL:-}
-      # Seconds between re-render cycles. Each cycle renders one feature card
-      # PER movie channel via Remotion (~2-3 min each on this CPU), so 300s made
-      # it render almost non-stop. Feature/junction content only changes when the
-      # program does (~hours), so 1800s is plenty and keeps CPU idle between bursts.
-      - INTERVAL=1800
+      # Seconds between re-render cycles. Each cycle renders one card PER channel
+      # via Remotion. Content only changes when the program does (~hours), and the
+      # renderer now skips a card whose line-up is unchanged, so hourly is plenty
+      # and keeps CPU idle between bursts.
+      - INTERVAL=3600
+      # Cores a single render may use (Remotion defaults to ~all of them). Kept
+      # low so a render burst never starves ErsatzTV's live transcoding.
+      - RENDER_CONCURRENCY=2
       - ACCENT=#e50914 # brand accent color for all cards
       # Jellyfin token artwork. Put JELLYFIN_API_KEY in that same .env (never
       # committed); blank = tokens fall back to initials.

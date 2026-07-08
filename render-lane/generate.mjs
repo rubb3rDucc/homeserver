@@ -26,6 +26,10 @@ const CHANNELS = asList(process.env.CHANNEL); // now/next/later channels
 const MOVIE_CHANNELS = asList(process.env.MOVIE_CHANNEL); // feature-card channels
 const INTERVAL = parseInt(process.env.INTERVAL || "300", 10);
 const ACCENT = process.env.ACCENT || "#e50914";
+// Cap the cores a single render grabs so a burst never pegs the whole box
+// (Remotion otherwise defaults to ~all cores). ErsatzTV needs the rest for
+// live transcoding.
+const CONCURRENCY = parseInt(process.env.RENDER_CONCURRENCY || "2", 10);
 
 // Optional CN City assets for the junction card. Any URL Remotion can fetch, or
 // a staticFile() path under public/. Empty -> the card uses its CSS fallback.
@@ -294,8 +298,24 @@ async function renderComp(url, id, inputProps, outPath) {
     codec: "h264",
     outputLocation: tmp,
     inputProps,
+    concurrency: CONCURRENCY,
   });
   await fs.rename(tmp, outPath);
+}
+
+// Skip a re-render when the card's content is identical to what's already on
+// disk — the only thing that changes between intervals is usually nothing, and
+// a render is expensive. Keyed by output path; the signature captures just the
+// schedule-derived content (titles/times), not the rotating b-roll/music.
+const lastSig = new Map();
+async function unchanged(outPath, sig) {
+  if (lastSig.get(outPath) !== sig) return false;
+  try {
+    await fs.access(outPath);
+    return true; // same content and the file is still there
+  } catch {
+    return false; // file went missing -> re-render
+  }
 }
 
 async function renderCards() {
@@ -305,30 +325,38 @@ async function renderCards() {
   for (const ch of CHANNELS) {
     try {
       const { channelName, items } = await getSchedule(ch);
-      if (items.length) {
-        const slots = await attachTokens(pickNowNextLater(items));
-        const backgroundSrc = await pickBroll();
-        const musicSrc = await pickMusic();
-        await renderComp(
-          url,
-          "NowNextLater",
-          {
-            channelName,
-            accent: ACCENT,
-            ...slots,
-            backgroundSrc,
-            musicSrc,
-            voiceoverSrc: VOICEOVER_SRC,
-          },
-          path.join(NOW_DIR, `now-next-later-${ch}.mp4`)
-        );
-        console.log(
-          `${new Date().toISOString()}  junction [${channelName}]  ` +
-            `NOW: ${slots.now.title} | NEXT: ${slots.next.title} | LATER: ${slots.later.title}`
-        );
-      } else {
+      if (!items.length) {
         console.warn(`now/next/later: no programmes for channel "${ch}"`);
+        continue;
       }
+      const slots = pickNowNextLater(items);
+      const outPath = path.join(NOW_DIR, `now-next-later-${ch}.mp4`);
+      const sig = JSON.stringify(["nnl", channelName, slots.now, slots.next, slots.later]);
+      if (await unchanged(outPath, sig)) {
+        console.log(`${new Date().toISOString()}  junction [${channelName}]  line-up unchanged — skip`);
+        continue;
+      }
+      await attachTokens(slots);
+      const backgroundSrc = await pickBroll();
+      const musicSrc = await pickMusic();
+      await renderComp(
+        url,
+        "NowNextLater",
+        {
+          channelName,
+          accent: ACCENT,
+          ...slots,
+          backgroundSrc,
+          musicSrc,
+          voiceoverSrc: VOICEOVER_SRC,
+        },
+        outPath
+      );
+      lastSig.set(outPath, sig);
+      console.log(
+        `${new Date().toISOString()}  junction [${channelName}]  ` +
+          `NOW: ${slots.now.title} | NEXT: ${slots.next.title} | LATER: ${slots.later.title}`
+      );
     } catch (e) {
       console.error(`now/next/later error [${ch}]:`, e.message);
     }
@@ -339,23 +367,30 @@ async function renderCards() {
     try {
       const { channelName, items } = await getSchedule(ch);
       const card = pickMovieCard(items);
-      if (card) {
-        const token = await resolveToken(card.title);
-        const backgroundSrc = await pickBroll();
-        const musicSrc = await pickMusic();
-        await renderComp(
-          url,
-          "FeaturePresentation",
-          { channelName, accent: ACCENT, ...card, token, backgroundSrc, musicSrc },
-          path.join(FEATURE_DIR, `feature-${ch}.mp4`)
-        );
-        console.log(
-          `${new Date().toISOString()}  feature [${channelName}]  ` +
-            `${card.title} (${[card.rating, card.year, card.runtime].filter(Boolean).join(" · ")})`
-        );
-      } else {
+      if (!card) {
         console.warn(`feature: no programmes for channel "${ch}"`);
+        continue;
       }
+      const outPath = path.join(FEATURE_DIR, `feature-${ch}.mp4`);
+      const sig = JSON.stringify(["feature", channelName, card]);
+      if (await unchanged(outPath, sig)) {
+        console.log(`${new Date().toISOString()}  feature [${channelName}]  ${card.title} unchanged — skip`);
+        continue;
+      }
+      const token = await resolveToken(card.title);
+      const backgroundSrc = await pickBroll();
+      const musicSrc = await pickMusic();
+      await renderComp(
+        url,
+        "FeaturePresentation",
+        { channelName, accent: ACCENT, ...card, token, backgroundSrc, musicSrc },
+        outPath
+      );
+      lastSig.set(outPath, sig);
+      console.log(
+        `${new Date().toISOString()}  feature [${channelName}]  ` +
+          `${card.title} (${[card.rating, card.year, card.runtime].filter(Boolean).join(" · ")})`
+      );
     } catch (e) {
       console.error(`feature error [${ch}]:`, e.message);
     }

@@ -34,6 +34,12 @@ const FONT = "Liberation Sans, DejaVu Sans, Arial, Helvetica, sans-serif";
 const AR_W = 4;
 const AR_H = 3;
 
+// The card is authored at this fixed size; the root scales it to whatever
+// resolution the composition runs at (e.g. 1280x720), so none of the pixel
+// math below has to change when the output resolution does.
+const DESIGN_W = 1920;
+const DESIGN_H = 1080;
+
 const initials = (title: string) =>
   title
     .replace(/[^A-Za-z0-9 ]/g, "")
@@ -260,7 +266,7 @@ export const NowNextLater: React.FC<NowNextLaterProps> = ({
   voiceoverSrc,
 }) => {
   const frame = useCurrentFrame();
-  const { durationInFrames, fps, width, height } = useVideoConfig();
+  const { durationInFrames, fps, width } = useVideoConfig();
 
   // Ending: the now/next/later slots fade out and the channel bug is revealed,
   // then held alone (over the background) for a beat before the clip ends.
@@ -336,13 +342,23 @@ export const NowNextLater: React.FC<NowNextLaterProps> = ({
     { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
   );
 
-  // 4:3 pillarbox centered in the 16:9 canvas.
-  const boxH = height;
-  const boxW = (height * AR_W) / AR_H;
-  const boxLeft = (width - boxW) / 2;
+  // 4:3 pillarbox centered in the 16:9 design canvas.
+  const boxH = DESIGN_H;
+  const boxW = (DESIGN_H * AR_W) / AR_H;
+  const boxLeft = (DESIGN_W - boxW) / 2;
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#000" }}>
+      {/* authored at 1920x1080; scale the whole canvas to the composition's
+          actual resolution (e.g. 1280x720) so the render is lighter */}
+      <AbsoluteFill
+        style={{
+          width: DESIGN_W,
+          height: DESIGN_H,
+          transformOrigin: "top left",
+          transform: `scale(${width / DESIGN_W})`,
+        }}
+      >
       {/* --- audio beds --- */}
       {musicSrc ? (
         <Audio
@@ -466,6 +482,7 @@ export const NowNextLater: React.FC<NowNextLaterProps> = ({
           </span>
         </div>
       </div>
+      </AbsoluteFill>
     </AbsoluteFill>
   );
 };
