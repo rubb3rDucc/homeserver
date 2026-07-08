@@ -369,7 +369,7 @@ async function renderCards() {
 
 async function main() {
   console.log(
-    `render-lane up. channel="${CHANNEL}" movieChannel="${MOVIE_CHANNEL}" interval=${INTERVAL}s`
+    `render-lane up. channel="${CHANNEL || "(skipped)"}" movieChannels="${MOVIE_CHANNELS.join(",")}" interval=${INTERVAL}s`
   );
 
   // Serve B-roll + music folders over loopback so Remotion can fetch them.
