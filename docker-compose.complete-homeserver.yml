@@ -378,6 +378,9 @@ services:
     build: ./render-lane
     image: homeserver/render-lane:latest
     container_name: render-lane
+    # Remotion renders spawn headless Chrome; its subprocesses orphan into
+    # unreapable zombies because node (PID 1) doesn't reap. tini reaps them.
+    init: true
     environment:
       - TZ=America/New_York
       - ERSATZTV_URL=http://ersatztv:8409
@@ -386,7 +389,11 @@ services:
       #   STATION_MOVIE_CHANNEL=2,3,4,6   (feature card, one per channel)
       - CHANNEL=${STATION_CHANNEL:-}
       - MOVIE_CHANNEL=${STATION_MOVIE_CHANNEL:-}
-      - INTERVAL=300 # seconds between re-renders (schedule rolls forward)
+      # Seconds between re-render cycles. Each cycle renders one feature card
+      # PER movie channel via Remotion (~2-3 min each on this CPU), so 300s made
+      # it render almost non-stop. Feature/junction content only changes when the
+      # program does (~hours), so 1800s is plenty and keeps CPU idle between bursts.
+      - INTERVAL=1800
       - ACCENT=#e50914 # brand accent color for all cards
       # Jellyfin token artwork. Put JELLYFIN_API_KEY in that same .env (never
       # committed); blank = tokens fall back to initials.
