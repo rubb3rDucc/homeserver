@@ -33,8 +33,8 @@ export const RemotionRoot: React.FC = () => {
         component={FeaturePresentation}
         durationInFrames={12 * FPS}
         fps={FPS}
-        width={1920}
-        height={1080}
+        width={1280}
+        height={720}
         defaultProps={{
           channelName: "My Channel",
           accent: "#e50914",

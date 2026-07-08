@@ -151,7 +151,7 @@ export const FeaturePresentation: React.FC<FeatureProps> = ({
   musicSrc,
 }) => {
   const frame = useCurrentFrame();
-  const { fps, durationInFrames } = useVideoConfig();
+  const { fps, durationInFrames, width } = useVideoConfig();
 
   const cardIn = spring({ frame, fps, config: { damping: 200 } });
   const row = (d: number) => spring({ frame: frame - d, fps, config: { damping: 200 } });
@@ -165,6 +165,16 @@ export const FeaturePresentation: React.FC<FeatureProps> = ({
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#000" }}>
+      {/* the card is designed at 1920x1080; scale the whole canvas to fill
+          whatever resolution the composition is (e.g. 1280x720) */}
+      <AbsoluteFill
+        style={{
+          width: 1920,
+          height: 1080,
+          transformOrigin: "top left",
+          transform: `scale(${width / 1920})`,
+        }}
+      >
       {musicSrc ? (
         <Audio
           src={musicSrc}
@@ -352,6 +362,7 @@ export const FeaturePresentation: React.FC<FeatureProps> = ({
       >
         {channelName}
       </div>
+      </AbsoluteFill>
 
       {/* hard cut to black after the hold */}
       {!visible ? <AbsoluteFill style={{ backgroundColor: "#000" }} /> : null}

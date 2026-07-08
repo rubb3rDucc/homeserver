@@ -19,12 +19,11 @@ import http from "node:http";
 import { createReadStream } from "node:fs";
 
 const ERSATZTV_URL = process.env.ERSATZTV_URL || "http://ersatztv:8409";
-const CHANNEL = process.env.CHANNEL || ""; // channel for now/next/later ("" = skip)
-// One or more channels for the feature card (comma-separated) -> one card each.
-const MOVIE_CHANNELS = (process.env.MOVIE_CHANNEL || CHANNEL || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+const asList = (v) =>
+  (v || "").split(",").map((s) => s.trim()).filter(Boolean);
+// Comma-separated channel lists -> one card each. Empty = that card is skipped.
+const CHANNELS = asList(process.env.CHANNEL); // now/next/later channels
+const MOVIE_CHANNELS = asList(process.env.MOVIE_CHANNEL); // feature-card channels
 const INTERVAL = parseInt(process.env.INTERVAL || "300", 10);
 const ACCENT = process.env.ACCENT || "#e50914";
 
@@ -47,14 +46,8 @@ const AUDIO_RE = /\.(mp3|m4a|aac|ogg|opus|wav|flac)$/i;
 const JELLYFIN_URL = process.env.JELLYFIN_URL || "http://jellyfin:8096";
 const JELLYFIN_API_KEY = process.env.JELLYFIN_API_KEY || "";
 
-const OUTPUT = process.env.OUTPUT || "/station/library/junctions/now-next-later.mp4";
+const NOW_DIR = process.env.NOW_DIR || "/station/library/junctions";
 const FEATURE_DIR = process.env.FEATURE_DIR || "/station/library/feature";
-// Render the feature card at a fraction of 1080p to save CPU (0.6667 -> 720p).
-const FEATURE_SCALE = parseFloat(process.env.FEATURE_SCALE || "0.6667");
-const IDENT_OUTPUT = process.env.IDENT_OUTPUT || "/station/library/idents/ident.mp4";
-
-const IDENT_NAME = process.env.IDENT_NAME || "My Channel";
-const IDENT_TAGLINE = process.env.IDENT_TAGLINE || "";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -291,7 +284,7 @@ async function getServeUrl() {
   return serveUrl;
 }
 
-async function renderComp(url, id, inputProps, outPath, opts = {}) {
+async function renderComp(url, id, inputProps, outPath) {
   const composition = await selectComposition({ serveUrl: url, id, inputProps });
   await fs.mkdir(path.dirname(outPath), { recursive: true });
   const tmp = `${outPath}.tmp.mp4`; // same dir -> atomic rename, never serve a half file
@@ -301,7 +294,6 @@ async function renderComp(url, id, inputProps, outPath, opts = {}) {
     codec: "h264",
     outputLocation: tmp,
     inputProps,
-    scale: opts.scale, // <1 renders at lower resolution (cheaper), same layout
   });
   await fs.rename(tmp, outPath);
 }
@@ -309,10 +301,10 @@ async function renderComp(url, id, inputProps, outPath, opts = {}) {
 async function renderCards() {
   const url = await getServeUrl();
 
-  // now / next / later (skipped while CHANNEL is blank)
-  if (CHANNEL) {
+  // now / next / later — one junction per channel, output now-next-later-<ch>.mp4
+  for (const ch of CHANNELS) {
     try {
-      const { channelName, items } = await getSchedule(CHANNEL);
+      const { channelName, items } = await getSchedule(ch);
       if (items.length) {
         const slots = await attachTokens(pickNowNextLater(items));
         const backgroundSrc = await pickBroll();
@@ -328,17 +320,17 @@ async function renderCards() {
             musicSrc,
             voiceoverSrc: VOICEOVER_SRC,
           },
-          OUTPUT
+          path.join(NOW_DIR, `now-next-later-${ch}.mp4`)
         );
         console.log(
           `${new Date().toISOString()}  junction [${channelName}]  ` +
             `NOW: ${slots.now.title} | NEXT: ${slots.next.title} | LATER: ${slots.later.title}`
         );
       } else {
-        console.warn(`now/next/later: no programmes for channel "${CHANNEL}"`);
+        console.warn(`now/next/later: no programmes for channel "${ch}"`);
       }
     } catch (e) {
-      console.error("now/next/later error:", e.message);
+      console.error(`now/next/later error [${ch}]:`, e.message);
     }
   }
 
@@ -355,8 +347,7 @@ async function renderCards() {
           url,
           "FeaturePresentation",
           { channelName, accent: ACCENT, ...card, token, backgroundSrc, musicSrc },
-          path.join(FEATURE_DIR, `feature-${ch}.mp4`),
-          { scale: FEATURE_SCALE }
+          path.join(FEATURE_DIR, `feature-${ch}.mp4`)
         );
         console.log(
           `${new Date().toISOString()}  feature [${channelName}]  ` +
@@ -373,7 +364,8 @@ async function renderCards() {
 
 async function main() {
   console.log(
-    `render-lane up. channel="${CHANNEL || "(skipped)"}" movieChannels="${MOVIE_CHANNELS.join(",")}" interval=${INTERVAL}s`
+    `render-lane up. nowNextLater="${CHANNELS.join(",") || "(none)"}" ` +
+      `movie="${MOVIE_CHANNELS.join(",") || "(none)"}" interval=${INTERVAL}s`
   );
 
   // Serve B-roll + music folders over loopback so Remotion can fetch them.
