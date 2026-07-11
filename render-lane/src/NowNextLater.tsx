@@ -10,8 +10,14 @@ import {
   useVideoConfig,
 } from "remotion";
 import { measureText } from "@remotion/layout-utils";
+import { FisheyeLogo } from "./fisheye";
 
-type Item = { title: string; time: string; token?: string };
+type Item = {
+  title: string;
+  time: string;
+  token?: string;
+  tokenType?: string; // "logo" (transparent -> contain + outline) | "poster" (opaque -> cover)
+};
 
 export type NowNextLaterProps = {
   channelName: string;
@@ -143,8 +149,8 @@ const Slot: React.FC<{
       <div
         style={{
           position: "relative",
-          width: 176,
-          height: 176,
+          width: 208,
+          height: 208,
           flexShrink: 0,
           transform: `scale(${1 + g * 0.05})`,
         }}
@@ -161,17 +167,15 @@ const Slot: React.FC<{
             pointerEvents: "none",
           }}
         />
-        {/* clean disc + logo (neutral rim, no accent border) */}
+        {/* black glass disc: no hard rim, just a soft white glow */}
         <div
           style={{
             width: "100%",
             height: "100%",
             borderRadius: "50%",
             overflow: "hidden",
-            background:
-              "radial-gradient(circle at 35% 30%, #fdfdf5, #e9e7d6 70%, #cfcbb4)",
-            border: "3px solid rgba(255,255,255,0.85)",
-            boxShadow: "0 3px 16px rgba(0,0,0,0.45)",
+            background: "radial-gradient(circle at 38% 30%, #2a2a34, #08080c 78%)",
+            boxShadow: "0 0 26px rgba(255,255,255,0.22), 0 4px 18px rgba(0,0,0,0.55)",
             filter: `brightness(${1 + g * 0.12})`,
             display: "flex",
             alignItems: "center",
@@ -179,25 +183,36 @@ const Slot: React.FC<{
             fontFamily: FONT,
             fontWeight: 800,
             fontSize: 60,
-            color: "#3a3a44",
+            color: "#e7ebf2",
             letterSpacing: 1,
           }}
         >
           {item.token ? (
-            // contain + padding so wide show logos sit inside the disc uncropped
-            <img
-              src={item.token}
-              style={{
-                width: "100%",
-                height: "100%",
-                objectFit: "contain",
-                padding: 20,
-                boxSizing: "border-box",
-              }}
-            />
+            item.tokenType === "poster" ? (
+              // rare no-logo fallback: opaque poster / key art, cover-filled
+              <img
+                src={item.token}
+                style={{ width: "100%", height: "100%", objectFit: "cover" }}
+              />
+            ) : (
+              // title logo: slight fisheye dome + white keyline outline so it
+              // reads on the dark disc (canvas-based; see fisheye.tsx)
+              <FisheyeLogo src={item.token} padding={6} />
+            )
           ) : (
             initials(item.title)
           )}
+          {/* faint inner vignette: defines the art edge against the disc rim
+              (helps cover-filled posters especially). Clipped to the circle. */}
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              borderRadius: "50%",
+              boxShadow: "inset 0 0 22px rgba(0,0,0,0.20)",
+              pointerEvents: "none",
+            }}
+          />
         </div>
       </div>
     </div>
@@ -323,7 +338,7 @@ export const NowNextLater: React.FC<NowNextLaterProps> = ({
         measureText({ text: title, fontFamily: FONT, fontSize: 30, fontWeight: 600 }).width
       )
     );
-  const TEXT_RIGHT = 274; // right edge of the text block, from the stage right
+  const TEXT_RIGHT = 306; // right padding 70 + token 208 + gap 28 (from stage right)
   const aR = [
     textW("now", now.title),
     textW("next", next.title),

@@ -221,14 +221,16 @@ function pickNowNextLater(items) {
 }
 
 // ---- Jellyfin token artwork ----------------------------------------------- //
-// Match a programme title to a Jellyfin item and return its Logo (else Primary)
-// image URL for the round token. Results are cached by title (art is stable).
+// Match a programme title to a Jellyfin item and return an image for the round
+// token: its Logo, else its poster for the rare show with no logo. Returns
+// { url, type: "logo"|"poster" }. Cached by title (art is stable).
 const tokenCache = new Map();
 async function resolveToken(title) {
-  if (!JELLYFIN_API_KEY || !title || title === "—") return "";
+  const empty = { url: "", type: "" };
+  if (!JELLYFIN_API_KEY || !title || title === "—") return empty;
   if (tokenCache.has(title)) return tokenCache.get(title);
 
-  let url = "";
+  let result = empty;
   try {
     const q = new URLSearchParams({
       searchTerm: title,
@@ -240,27 +242,35 @@ async function resolveToken(title) {
     const res = await fetch(`${JELLYFIN_URL}/Items?${q}`);
     if (res.ok) {
       const item = ((await res.json()).Items || [])[0];
-      const type = item?.ImageTags?.Logo
+      // Use the title Logo (rendered with a dark keyline outline so even white
+      // wordmarks read on the cream disc). Only fall back to the poster / key
+      // art for the rare show that has no logo at all.
+      const kind = item?.ImageTags?.Logo
         ? "Logo"
         : item?.ImageTags?.Primary
         ? "Primary"
         : "";
-      if (item && type) {
-        url = `${JELLYFIN_URL}/Items/${item.Id}/Images/${type}?api_key=${JELLYFIN_API_KEY}`;
+      if (item && kind) {
+        result = {
+          url: `${JELLYFIN_URL}/Items/${item.Id}/Images/${kind}?api_key=${JELLYFIN_API_KEY}`,
+          type: kind === "Primary" ? "poster" : "logo",
+        };
       }
     }
   } catch (e) {
     console.warn(`jellyfin token lookup failed for "${title}": ${e.message}`);
   }
-  tokenCache.set(title, url);
-  return url;
+  tokenCache.set(title, result);
+  return result;
 }
 
 // Attach a token image URL to each now/next/later slot (in place).
 async function attachTokens(slots) {
   await Promise.all(
     [slots.now, slots.next, slots.later].map(async (slot) => {
-      slot.token = await resolveToken(slot.title);
+      const t = await resolveToken(slot.title);
+      slot.token = t.url;
+      slot.tokenType = t.type; // "poster" | "logo" | ""
     })
   );
   return slots;
@@ -377,7 +387,7 @@ async function renderCards() {
         console.log(`${new Date().toISOString()}  feature [${channelName}]  ${card.title} unchanged — skip`);
         continue;
       }
-      const token = await resolveToken(card.title);
+      const token = (await resolveToken(card.title)).url;
       const backgroundSrc = await pickBroll();
       const musicSrc = await pickMusic();
       await renderComp(
