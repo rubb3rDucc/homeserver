@@ -31,7 +31,7 @@ import time
 from collections import defaultdict
 from dataclasses import replace
 
-from . import discover, program, reruns, score
+from . import discover, program, report, reruns, score
 from .config import load_channels, load_env
 from .ersatztv import ErsatzTV
 from .jellyfin import fetch as fetch_watch
@@ -250,7 +250,7 @@ def curate(channel, etv, ledger, library, episodes_by_show, episodes_by_id,
     if collection_id is None:
         log.warning("ch%s: no ErsatzTV collection named %r -- skipped",
                     channel.number, channel.collection)
-        return
+        return None
 
     members = etv.collection_items(collection_id)
     ledger.sync_rotation(channel.collection, members)
@@ -284,9 +284,12 @@ def curate(channel, etv, ledger, library, episodes_by_show, episodes_by_id,
     taken = {dedupe_key(mid, library, episodes_by_id) for mid in members}
 
     room = min(wanted, budget)
-    shortlisted = []
+    # Everything eligible right now, best first. The head of this becomes the
+    # shortlist; the tail is what the report shows as "next up" -- the queue
+    # max_churn is deliberately pacing.
+    eligible = []
     for media_id in pool:
-        if len(shortlisted) >= room * (3 if channel.taste_gate else 1):
+        if len(eligible) >= max(room * 3, 20):
             break
         if media_id in members or media_id in benched:
             continue
@@ -294,7 +297,8 @@ def curate(channel, etv, ledger, library, episodes_by_show, episodes_by_id,
         if key in taken:
             continue
         taken.add(key)
-        shortlisted.append(media_id)
+        eligible.append(media_id)
+    shortlisted = eligible[: room * (3 if channel.taste_gate else 1)]
 
     # A taste-gated charter shortlists three times what it needs and lets
     # Claude strike the ones that only look right on paper.
@@ -350,6 +354,24 @@ def curate(channel, etv, ledger, library, episodes_by_show, episodes_by_id,
         log.info("    retired  %s  [%s]", label(media_id), reason)
     for media_id in joining:
         log.info("    added    %s", label(media_id))
+
+    resting = ledger.benched(channel.collection)
+    return {
+        "number": channel.number,
+        "name": channel.name,
+        "collection": channel.collection,
+        "kind": channel.kind,
+        "size": len(members) + len(joining),
+        "target": channel.target_size,
+        "order": (f"programmed: {channel.programming.order}"
+                  if channel.programming.order in program.CURATED
+                  else "ErsatzTV playback order"),
+        "taste_gate": channel.taste_gate,
+        "added": [(label(m), "") for m in joining],
+        "retired": [(label(m), r) for m, r in leaving],
+        "next_up": [(label(m), "") for m in eligible[len(joining):][:12]],
+        "resting": [(label(m), r) for m, r in resting.items()],
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -437,16 +459,27 @@ def cycle(env, channels):
         }
 
         proposed = 0
+        rows = []
         for channel in channels:
-            curate(channel, etv, ledger, library, episodes_by_show,
-                   episodes_by_id, verdicts, watch, jellyfin_ids, collections,
-                   llm, serials)
+            row = curate(channel, etv, ledger, library, episodes_by_show,
+                         episodes_by_id, verdicts, watch, jellyfin_ids,
+                         collections, llm, serials)
+            if row:
+                rows.append(row)
             proposed += shortlist(channel, env, library, ledger, llm, owned)
 
-        total = discover.write_shortlist(env.proposals, ledger)
+        note = ("_Nothing outstanding._" if env.tmdb_key else
+                "_No `TMDB_API_KEY` set, so the curator can't look outside "
+                "your library. Add a free key from "
+                "https://www.themoviedb.org/settings/api to get suggestions "
+                "here._")
+        report.write(env.report, rows, ledger.proposals(), note)
+        log.info("report -> %s", env.report)
+
+        total = len(ledger.proposals())
         if proposed:
             log.info("%d new proposal(s); %d outstanding -> %s",
-                     proposed, total, env.proposals)
+                     proposed, total, env.report)
             discover.notify(
                 env.ntfy_url,
                 "Curator: new titles to consider",

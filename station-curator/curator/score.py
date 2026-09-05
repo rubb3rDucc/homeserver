@@ -49,6 +49,12 @@ def evaluate(item, charter, weights) -> Scored | None:
     if required and not required <= genres:
         return None
 
+    # "at least one of these genres" -- the gate that separates a drama
+    # channel from every comedy that happens to carry a Crime tag.
+    gate = _lower(charter.any_genres)
+    if gate and not (genres & gate):
+        return None
+
     required = _lower(charter.require_keywords)
     if required and not required <= tags:
         return None

@@ -93,6 +93,11 @@ target_size = 50
 [channel.charter]
 genres = ["Drama", "Thriller", "Mystery", "Crime", "Horror"]
 exclude_genres = ["Animation", "Family"]
+# Without this, any comedy carrying a Crime or Mystery tag qualifies --
+# Super Troopers, Scary Movie and Freddy Got Fingered were all queued for
+# HBO Drama. Requiring Drama-or-Horror keeps dramedies (10 Things, The
+# Devil Wears Prada both carry Drama) and drops pure comedies.
+any_genres = ["Drama", "Horror"]
 keywords = ["based on novel or book", "coming of age", "dramatic", "satire"]
 years = [1970, 2020]
 

@@ -57,6 +57,7 @@ class Reruns:
 class Charter:
     """What belongs on the channel, in metadata terms."""
     genres: tuple = ()              # any match scores
+    any_genres: tuple = ()          # at least one must be present, else reject
     require_genres: tuple = ()      # all must be present, else rejected
     exclude_genres: tuple = ()      # any match rejects
     keywords: tuple = ()            # TMDB keyword tags; any match scores
@@ -211,6 +212,7 @@ class Env:
     state_db: Path
     charters: Path
     proposals: Path
+    report: Path
     interval: int
     dry_run: bool
     jellyfin_url: str
@@ -243,6 +245,7 @@ def load_env() -> Env:
         state_db=Path(env("CURATOR_STATE_DB", "/state/curator.sqlite3")),
         charters=Path(env("CURATOR_CHARTERS", "/app/charters.toml")),
         proposals=Path(env("CURATOR_PROPOSALS", "/state/proposals.md")),
+        report=Path(env("CURATOR_REPORT", "/state/report.md")),
         interval=int(env("CURATOR_INTERVAL", "21600")),   # 6h
         dry_run=_flag("CURATOR_DRY_RUN", False),
         jellyfin_url=env("JELLYFIN_URL", "http://jellyfin:8096").rstrip("/"),
