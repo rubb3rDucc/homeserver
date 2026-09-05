@@ -157,7 +157,11 @@ def resolve(base_url: str, api_key: str, kind: str, title: str, year=None):
     Sonarr already hold that credential.
     """
     if not api_key:
-        return None
+        # Distinct from "no match": the resolver isn't configured at all.
+        raise HttpError(
+            f"no API key for {kind} lookup -- set "
+            f"{'RADARR' if kind == 'movie' else 'SONARR'}_API_KEY", 0
+        )
     path = "movie" if kind == "movie" else "series"
     try:
         results = request(
@@ -209,10 +213,23 @@ def suggested_for(channel, env, llm, library, playing, owned_ids):
     have = {(normalise(i.title), i.year) for i in library.values()}
     have_titles = {t for t, _ in have}
 
+    if not key:
+        log.warning(
+            "%s: %d suggestion(s) can't be verified -- set %s_API_KEY so the "
+            "curator can confirm a title exists before proposing it",
+            channel.collection, len(ideas),
+            "RADARR" if kind == "movie" else "SONARR",
+        )
+        return []
+
     out, dropped = [], 0
     for idea in ideas:
-        found = resolve(base, key, kind, idea.get("title", ""),
-                        idea.get("year"))
+        try:
+            found = resolve(base, key, kind, idea.get("title", ""),
+                            idea.get("year"))
+        except HttpError as exc:
+            log.warning("lookup unavailable: %s", exc)
+            return []
         if not found or not found["id"]:
             dropped += 1
             continue

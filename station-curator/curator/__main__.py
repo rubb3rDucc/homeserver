@@ -485,11 +485,19 @@ def cycle(env, channels):
             proposed += shortlist(channel, env, library, ledger, llm, owned,
                                   row["playing"] if row else [])
 
-        note = ("_Nothing outstanding._" if env.tmdb_key else
-                "_No `TMDB_API_KEY` set, so the curator can't look outside "
-                "your library. Add a free key from "
-                "https://www.themoviedb.org/settings/api to get suggestions "
-                "here._")
+        sources = {c.discover.source for c in channels if c.discover.enabled}
+        if "llm" in sources and not llm.enabled:
+            note = ("_No LLM key set, so the curator can't suggest titles "
+                    "outside your library. Set `GEMINI_API_KEY`._")
+        elif "llm" in sources and not (env.radarr_key or env.sonarr_key):
+            note = ("_Suggestions are generated but can't be verified: set "
+                    "`RADARR_API_KEY` / `SONARR_API_KEY` so the curator can "
+                    "confirm a title really exists before proposing it._")
+        elif "tmdb" in sources and not env.tmdb_key:
+            note = ("_No `TMDB_API_KEY` set for the channels using the tmdb "
+                    "source._")
+        else:
+            note = "_Nothing outstanding._"
         report.write(env.report, rows, ledger.proposals(), note)
         log.info("report -> %s", env.report)
 
