@@ -496,11 +496,14 @@ def _push_pages(proposed, total, names=None, per_page=8, max_pages=8):
             if items >= per_page:
                 pages.append(current)
                 current, items = [], 0
-                # Carry the channel header onto the next page for context.
+                # Carry the channel header onto the next page for context,
+                # without stacking "(cont.)" every time a channel spans
+                # three or more pages.
                 head = next((t for k, t in reversed(pages[-1])
                              if k == "head"), None)
                 if head:
-                    current.append(("head", f"{head} (cont.)"))
+                    base = head.removesuffix(" (cont.)")
+                    current.append(("head", f"{base} (cont.)"))
     if current and any(k == "item" for k, _ in current):
         pages.append(current)
 
