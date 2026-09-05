@@ -1,0 +1,474 @@
+"""
+station-curator -- keeps each channel's collection fresh, on-charter and
+rerun-safe, and shortlists what's worth acquiring next.
+
+One cycle, in order:
+
+  1. snapshot the playout window into the ledger (airings vanish when
+     ErsatzTV rolls its window forward, so this has to happen first)
+  2. expire finished cooldowns
+  3. read the library; classify shows as serial/episodic; judge every
+     episode for rerun safety
+  4. per channel: retire what's gone stale, then fill back to target
+  5. shortlist acquisitions, write proposals.md, push a summary
+
+Collections come in three shapes, matching how you already use them:
+
+  movie     a pool of films                  ("black films greatest hits")
+  show      whole series, expanded by ErsatzTV ("anime", "kids shows")
+  episode   individual episodes              ("superhero shows without finales")
+
+Episode collections are the interesting case: the charter is matched against
+each *show*, then only rerun-safe episodes of the shows that qualify are
+scheduled -- no finales, no part 2 of a two-parter. Episodes are interleaved
+across shows so a channel doesn't play six of one series back to back.
+"""
+
+import logging
+import signal
+import sys
+import time
+from collections import defaultdict
+from dataclasses import replace
+
+from . import discover, program, reruns, score
+from .config import load_channels, load_env
+from .ersatztv import ErsatzTV
+from .jellyfin import fetch as fetch_watch
+from .ledger import Ledger, utcnow
+from .llm import LLM
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-7s %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+log = logging.getLogger("curator")
+
+_stop = False
+
+
+def _handle_signal(signum, _frame):
+    global _stop
+    _stop = True
+    log.info("signal %s received -- finishing the current cycle", signum)
+
+
+# --------------------------------------------------------------------------- #
+# Staleness
+# --------------------------------------------------------------------------- #
+def retirements(channel, members, ledger, watch, jellyfin_ids):
+    """
+    Decide what should leave the collection, worst offender first.
+
+    Returns [(media_id, reason)]. Nothing is applied here -- the caller
+    enforces min_size and max_churn.
+    """
+    fresh = channel.freshness
+    airings = ledger.airing_counts(fresh.airing_window_days)
+    ages = ledger.days_in_rotation(channel.collection)
+    now = utcnow()
+
+    out = []
+    for media_id in members:
+        played = airings.get(media_id, 0)
+        age = ages.get(media_id, 0.0)
+
+        if played >= fresh.max_airings:
+            out.append((media_id, played, f"aired {played}x in "
+                                          f"{fresh.airing_window_days}d"))
+            continue
+        if age >= fresh.max_days_in_rotation:
+            out.append((media_id, played, f"{age:.0f}d in rotation"))
+            continue
+
+        item_id = jellyfin_ids.get(media_id)
+        seen = watch.get(item_id) if item_id else None
+        if seen and seen.last_played:
+            days = (now - seen.last_played).total_seconds() / 86400
+            if days <= fresh.rest_after_watch_days:
+                out.append((media_id, played, f"watched {days:.0f}d ago"))
+
+    # Retire the most-aired first; it's the one viewers are most sick of.
+    out.sort(key=lambda row: -row[1])
+    return [(media_id, reason) for media_id, _, reason in out]
+
+
+# --------------------------------------------------------------------------- #
+# Candidate pools
+# --------------------------------------------------------------------------- #
+def _interleave(groups):
+    """Round-robin across groups so one show can't dominate the collection."""
+    out = []
+    pools = [list(g) for g in groups if g]
+    while pools:
+        for pool in list(pools):
+            out.append(pool.pop(0))
+            if not pool:
+                pools.remove(pool)
+    return out
+
+
+def _spread(episode_ids):
+    """
+    Order a show's episodes so we don't always pick episode 1.
+
+    Sorted by a stable hash of the media id: varied across shows, but
+    identical on every run, so a rebuild doesn't reshuffle the channel.
+    """
+    return sorted(episode_ids, key=lambda mid: (mid * 2654435761) % 2147483647)
+
+
+def dedupe_key(media_id, library, episodes_by_id) -> str:
+    """
+    Identity used to avoid scheduling the same thing twice.
+
+    This library really does contain duplicates -- 'The Prince of Egypt' is in
+    it three times under three media ids -- so identity has to be the title,
+    not the id.
+    """
+    if media_id in episodes_by_id:
+        ep = episodes_by_id[media_id]
+        show = library.get(ep.show_id)
+        name = show.title.lower() if show else str(ep.show_id)
+        return f"{name}|s{ep.season}e{ep.number}"
+    item = library.get(media_id)
+    if item is None:
+        return f"#{media_id}"
+    return f"{item.title.strip().lower()}|{item.year or ''}"
+
+
+def candidate_pool(channel, library, episodes_by_show, verdicts, serials):
+    """
+    Everything eligible for this channel, best first.
+
+    For movie/show collections that's ranked library items. For episode
+    collections the charter ranks *shows*, then their rerun-safe episodes are
+    interleaved in show-rank order.
+
+    A `show` collection can't exclude individual finales -- ErsatzTV expands
+    the series and plays all of it -- but it can still honour skip_serialized
+    by keeping story-arc shows out of the collection entirely. That is what
+    a channel like "adult animation comedy non linear" is asking for.
+    """
+    if channel.kind == "show" and channel.reruns.skip_serialized:
+        pool = [i for i in library.values()
+                if i.kind == "show" and i.media_id not in serials]
+        ranked = score.rank(pool, channel.charter, channel.weights,
+                            channel.min_score)
+        return [s.item.media_id for s in ranked]
+
+    if channel.kind == "episode":
+        shows = [i for i in library.values() if i.kind == "show"]
+        ranked = score.rank(shows, channel.charter, channel.weights,
+                            channel.min_score)
+        groups = []
+        for scored in ranked:
+            safe = [
+                ep.media_id
+                for ep in episodes_by_show.get(scored.item.media_id, [])
+                if verdicts.get(ep.media_id) and verdicts[ep.media_id].safe
+            ]
+            if safe:
+                groups.append(_spread(safe))
+        return _interleave(groups)
+
+    pool = [i for i in library.values() if i.kind == channel.kind]
+    ranked = score.rank(pool, channel.charter, channel.weights, channel.min_score)
+    return [scored.item.media_id for scored in ranked]
+
+
+def taste_filter(channel, llm, library, episodes_by_id, media_ids):
+    """
+    Drop shortlisted titles that don't actually belong, per the prose charter.
+
+    Episodes are judged by their *show* -- the question "is this Batman: TAS a
+    superhero cartoon" is answered once, not once per episode -- so an episode
+    collection costs one verdict per series.
+    """
+    subjects = {}                      # media_id -> Item being judged
+    for media_id in media_ids:
+        if media_id in episodes_by_id:
+            show = library.get(episodes_by_id[media_id].show_id)
+            if show is not None:
+                subjects[media_id] = show
+        elif media_id in library:
+            subjects[media_id] = library[media_id]
+
+    unique = {item.media_id: item for item in subjects.values()}
+    if not unique:
+        return media_ids
+
+    candidates = [
+        {
+            "id": str(item.media_id),
+            "title": item.title,
+            "year": item.year,
+            "overview": ", ".join(
+                sorted(item.genres | item.tags)
+            ) + (f" [{item.rating}]" if item.rating else ""),
+        }
+        for item in unique.values()
+    ]
+    verdicts = llm.vibe_filter(
+        channel.collection, channel.brief or channel.name, candidates,
+        namespace="lib",
+    )
+    if not verdicts:
+        return media_ids
+
+    kept = []
+    for media_id in media_ids:
+        subject = subjects.get(media_id)
+        if subject is None or verdicts.get(str(subject.media_id)) is not False:
+            kept.append(media_id)
+    dropped = len(media_ids) - len(kept)
+    if dropped:
+        log.info("    taste gate dropped %d candidate(s)", dropped)
+    return kept
+
+
+def detect_kind(members, library, episodes_by_id) -> str:
+    """Infer a collection's shape from what's currently in it."""
+    counts = defaultdict(int)
+    for media_id in members:
+        if media_id in episodes_by_id:
+            counts["episode"] += 1
+        elif media_id in library:
+            counts[library[media_id].kind] += 1
+    if not counts:
+        return "movie"
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+# --------------------------------------------------------------------------- #
+# One channel
+# --------------------------------------------------------------------------- #
+def curate(channel, etv, ledger, library, episodes_by_show, episodes_by_id,
+           verdicts, watch, jellyfin_ids, collections, llm, serials):
+    collection_id = collections.get(channel.collection)
+    if collection_id is None:
+        log.warning("ch%s: no ErsatzTV collection named %r -- skipped",
+                    channel.number, channel.collection)
+        return
+
+    members = etv.collection_items(collection_id)
+    ledger.sync_rotation(channel.collection, members)
+
+    if channel.kind == "auto":
+        kind = detect_kind(members, library, episodes_by_id)
+        channel = replace(channel, kind=kind)
+        log.info("ch%s: detected collection kind = %s", channel.number, kind)
+
+    # ---- retire ---------------------------------------------------------- #
+    leaving = retirements(channel, members, ledger, watch, jellyfin_ids)
+    room = max(0, len(members) - channel.min_size)
+    leaving = leaving[:min(len(leaving), room, channel.max_churn)]
+
+    for media_id, reason in leaving:
+        ledger.bench(channel.collection, media_id,
+                     channel.freshness.cooldown_days, reason)
+    if leaving:
+        etv.remove_items(collection_id, [mid for mid, _ in leaving])
+        members -= {mid for mid, _ in leaving}
+
+    # ---- fill ------------------------------------------------------------ #
+    benched = ledger.benched(channel.collection)
+    pool = candidate_pool(channel, library, episodes_by_show, verdicts,
+                          serials)
+    wanted = max(0, channel.target_size - len(members))
+    budget = max(0, channel.max_churn - len(leaving))
+
+    # Identity is the title, not the media id: the library holds the same film
+    # under several ids, and a channel must not play it twice.
+    taken = {dedupe_key(mid, library, episodes_by_id) for mid in members}
+
+    room = min(wanted, budget)
+    shortlisted = []
+    for media_id in pool:
+        if len(shortlisted) >= room * (3 if channel.taste_gate else 1):
+            break
+        if media_id in members or media_id in benched:
+            continue
+        key = dedupe_key(media_id, library, episodes_by_id)
+        if key in taken:
+            continue
+        taken.add(key)
+        shortlisted.append(media_id)
+
+    # A taste-gated charter shortlists three times what it needs and lets
+    # Claude strike the ones that only look right on paper.
+    if channel.taste_gate and shortlisted and llm.enabled:
+        shortlisted = taste_filter(channel, llm, library, episodes_by_id,
+                                   shortlisted)
+
+    joining = shortlisted[:room]
+
+    if joining:
+        etv.add_items(collection_id, joining)
+        ledger.note_added(channel.collection, joining)
+
+    def label(media_id):
+        if media_id in episodes_by_id:
+            ep = episodes_by_id[media_id]
+            show = library.get(ep.show_id)
+            name = show.title if show else f"show#{ep.show_id}"
+            return f"{name} S{ep.season}E{ep.number} {ep.title}".strip()
+        item = library.get(media_id)
+        return item.label() if item else f"#{media_id}"
+
+    # ---- program the order ------------------------------------------------ #
+    final = (members | set(joining))
+    if channel.programming.order == program.HANDBACK:
+        if etv.uses_custom_order(collection_id):
+            etv.clear_custom_order(collection_id)
+            log.info("ch%s: handed ordering back to ErsatzTV", channel.number)
+    else:
+        ordered = program.arrange(
+            channel, final, library=library, episodes_by_id=episodes_by_id,
+            airings=ledger.airing_counts(channel.freshness.airing_window_days),
+        )
+        if ordered:
+            wrote = etv.set_custom_order(collection_id, ordered)
+            log.info("ch%s: %s %s", channel.number,
+                     "programmed" if wrote else "would program",
+                     program.describe(channel, ordered))
+
+    log.info("ch%s %-34s %3d -> %3d  (-%d +%d)",
+             channel.number, channel.collection, len(members) + len(leaving),
+             len(members) + len(joining), len(leaving), len(joining))
+    for media_id, reason in leaving:
+        log.info("    retired  %s  [%s]", label(media_id), reason)
+    for media_id in joining:
+        log.info("    added    %s", label(media_id))
+
+
+# --------------------------------------------------------------------------- #
+# Acquisition shortlist
+# --------------------------------------------------------------------------- #
+def shortlist(channel, env, library, ledger, llm, owned):
+    if not channel.discover.enabled or not env.tmdb_key:
+        return 0
+    kind = "movie" if channel.kind == "movie" else "show"
+    seen = ledger.already_proposed(f"tmdb-{kind}", channel.collection)
+    found = [
+        c for c in discover.candidates_for(channel, env, library, owned[kind])
+        if c["id"] not in seen
+    ]
+    if not found:
+        return 0
+
+    found = found[: channel.discover.limit]
+    verdicts = llm.vibe_filter(channel.collection, channel.brief or channel.name,
+                               found) if channel.brief else {}
+
+    added = 0
+    for cand in found:
+        # Unjudged candidates are kept: the LLM narrows, it doesn't gatekeep.
+        if verdicts.get(cand["id"]) is False:
+            continue
+        reason = f"{cand['rating']}/10 from {cand['votes']} votes"
+        if ledger.propose(f"tmdb-{kind}", cand["id"], channel.collection,
+                          cand["title"], cand["year"],
+                          cand.get("rating") or 0.0, reason):
+            added += 1
+    return added
+
+
+# --------------------------------------------------------------------------- #
+# Cycle
+# --------------------------------------------------------------------------- #
+def cycle(env, channels):
+    etv = ErsatzTV(env.ersatztv_db, dry_run=env.dry_run)
+    ledger = Ledger(env.state_db)
+    try:
+        stored = ledger.record_airings(etv.airings())
+        expired = ledger.expire_cooldowns()
+        log.info("snapshot: %d new airing(s), %d cooldown(s) expired",
+                 stored, expired)
+
+        library = etv.library()
+        episodes = etv.episodes()
+        episodes_by_id = {ep.media_id: ep for ep in episodes}
+        episodes_by_show = defaultdict(list)
+        for ep in episodes:
+            episodes_by_show[ep.show_id].append(ep)
+        for eps in episodes_by_show.values():
+            eps.sort(key=lambda e: (e.season, e.number or 0))
+
+        # Anything you acted on since last cycle: drop the suggestion. The
+        # title itself is picked up by ordinary charter scoring below.
+        for got in discover.retire_acquired(ledger, library):
+            log.info("acquired: %s -- suggestion cleared", got)
+
+        llm = LLM(ledger, env.llm_model, env.llm_key, env.llm_provider)
+        shows = [i for i in library.values() if i.kind == "show"]
+        serials = llm.serialized_shows(shows)
+
+        # Rerun rules vary per channel, but classification does not; judge with
+        # the strictest rules present so a single pass serves every channel.
+        verdicts = reruns.analyse(
+            episodes,
+            max((c.reruns for c in channels),
+                key=lambda r: (r.skip_finales, r.skip_multipart,
+                               r.skip_serialized, r.skip_premieres)),
+            serials,
+        )
+        log.info("reruns: %s", reruns.summarise(verdicts))
+
+        watch = fetch_watch(env.jellyfin_url, env.jellyfin_key)
+        jellyfin_ids = etv.jellyfin_item_ids()
+        collections = etv.collections()
+
+        owned = {
+            "movie": discover.arr_tmdb_ids(env.radarr_url, env.radarr_key,
+                                           "movie"),
+            "show": discover.arr_tmdb_ids(env.sonarr_url, env.sonarr_key,
+                                          "show"),
+        }
+
+        proposed = 0
+        for channel in channels:
+            curate(channel, etv, ledger, library, episodes_by_show,
+                   episodes_by_id, verdicts, watch, jellyfin_ids, collections,
+                   llm, serials)
+            proposed += shortlist(channel, env, library, ledger, llm, owned)
+
+        total = discover.write_shortlist(env.proposals, ledger)
+        if proposed:
+            log.info("%d new proposal(s); %d outstanding -> %s",
+                     proposed, total, env.proposals)
+            discover.notify(
+                env.ntfy_url,
+                "Curator: new titles to consider",
+                f"{proposed} new suggestion(s), {total} outstanding.",
+            )
+        if llm.calls:
+            log.info("claude calls this cycle: %d", llm.calls)
+    finally:
+        etv.close()
+        ledger.close()
+
+
+def main():
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    env = load_env()
+    channels = load_channels(env.charters)
+    log.info("station-curator up. %d channel(s), every %ss%s",
+             len(channels), env.interval, "  [DRY RUN]" if env.dry_run else "")
+
+    while not _stop:
+        started = time.monotonic()
+        try:
+            cycle(env, channels)
+        except Exception:  # keep the daemon alive across a bad cycle
+            log.exception("cycle failed")
+        if _stop:
+            break
+        time.sleep(max(0.0, env.interval - (time.monotonic() - started)))
+
+
+if __name__ == "__main__":
+    main()

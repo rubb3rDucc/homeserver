@@ -1,0 +1,369 @@
+#############################################################################
+# Channel charters -- the only file you normally edit.
+#
+# Each [[channel]] binds one ErsatzTV Collection to a charter: the rules that
+# decide what belongs on it. The curator keeps that collection in line --
+# retiring what's gone stale, filling with the best-scoring thing it isn't
+# already playing. ErsatzTV notices the change (it etags collections) and
+# rebuilds the affected playout on its own. Your schedules, blocks, filler
+# presets and watermarks are never touched.
+#
+#   collection   MUST match the ErsatzTV collection name exactly -- it's the
+#                join key. A name that doesn't exist is logged and skipped.
+#   kind         movie | show | episode | auto
+#                  episode = individual rerun-safe episodes (no finales, no
+#                  part 2 of a two-parter) -- what "superhero shows without
+#                  finales" is doing by hand today.
+#                  auto = infer from what the collection currently holds.
+#   brief        prose, used only for the optional Claude taste pass on
+#                acquisition candidates. Delete it and that pass is skipped.
+#
+# Scoring is a weighted sum: each matching genre is worth `weights.genre`,
+# each matching keyword `weights.keyword` (keywords count for more -- "Crime"
+# describes a thousand films, "gangster" describes the one you meant), and
+# landing inside `years` is worth `weights.year`. A title joins when it
+# clears `min_score`. exclude_* rejects outright.
+#
+# Genres and keywords below are the real vocabulary in your library. Add more
+# freely; anything that never matches simply scores nothing.
+#############################################################################
+
+[defaults]
+target_size = 40
+min_size = 10          # never shrink a collection past this, whatever the rules say
+min_score = 2.0
+max_churn = 6          # max adds+removes per channel per run, so nothing lurches
+
+[defaults.freshness]
+max_airings = 4            # airings inside the window before a rest
+airing_window_days = 30
+max_days_in_rotation = 60  # hard age-out regardless of airings
+cooldown_days = 90         # how long a retired title stays benched
+rest_after_watch_days = 21 # rest anything watched on demand this recently
+
+[defaults.weights]
+genre = 1.0
+keyword = 1.5
+year = 1.0
+
+[defaults.reruns]
+skip_finales = true    # no season or series finales in a rerun block
+skip_multipart = true  # no "(1)" / "Part Two" episodes
+skip_serialized = true # skip story-arc shows entirely (needs Claude, else off)
+skip_premieres = false
+
+[defaults.programming]
+# "none" leaves ErsatzTV's own PlaybackOrder alone -- which is the right
+# default. ErsatzTV already does Random, Shuffle, ShuffleInOrder,
+# SeasonEpisode and Marathon (with a batch size) natively on the schedule
+# item; set those in the UI rather than here.
+#
+# The curated orders below exist only for what ErsatzTV *can't* do, because
+# they need the curator's airplay history or its rerun-safety judgement:
+#   rested      least-aired first -- lead with what you haven't seen lately
+#   heavy       most-aired first -- the hits, on purpose
+#   doubles     `batch` in-order episodes per show, then the next show; like
+#               Marathon, but the pair never straddles a finale or splits a
+#               two-parter, because only rerun-safe episodes are in the pool
+#   sequential  in-order within each show
+#   shuffle     deterministic -- stable across runs, so a rebuild doesn't
+#               reshuffle a channel underneath a playout ErsatzTV already built
+# Use "ersatztv" to hand a previously-curated collection back.
+order = "none"
+batch = 2
+
+[defaults.discover]
+enabled = true
+min_votes = 200
+min_rating = 6.5
+limit = 10
+
+#############################################################################
+# 2 - HBO Drama
+#############################################################################
+[[channel]]
+number = "2"
+name = "HBO Drama"
+collection = "drama/dramedy/horror"
+kind = "movie"
+brief = """Grown-up dramatic films: character pieces, crime dramas, prestige
+thrillers and the occasional horror. Not action spectacle, not comedy."""
+target_size = 50
+
+[channel.charter]
+genres = ["Drama", "Thriller", "Mystery", "Crime", "Horror"]
+exclude_genres = ["Animation", "Family"]
+keywords = ["based on novel or book", "coming of age", "dramatic", "satire"]
+years = [1970, 2020]
+
+[channel.discover]
+tmdb_genres = [18, 53, 80, 9648]
+
+#############################################################################
+# 3 - HBO Animated
+#############################################################################
+[[channel]]
+number = "3"
+name = "HBO Animated"
+collection = "curr animated films"
+kind = "movie"
+brief = """Animated feature films, current era -- the kind of thing a family
+channel runs in a evening slot. Pixar/DreamWorks register, not adult
+animation."""
+target_size = 25
+
+[channel.charter]
+require_genres = ["Animation"]
+genres = ["Family", "Adventure", "Comedy", "Fantasy"]
+exclude_keywords = ["adult animation"]
+# ContentRating is the reliable gate here; the "adult animation" tag is sparse.
+ratings = ["G", "PG", "TV-Y", "TV-Y7", "TV-G", "TV-PG"]
+years = [2000, 2030]
+
+[channel.discover]
+tmdb_genres = [16]
+
+#############################################################################
+# 4 - BET Films but not ass
+#############################################################################
+[[channel]]
+number = "4"
+name = "BET Films but not ass"
+collection = "black films greatest hits"
+kind = "movie"
+# "Black American cinema" is subject matter, not a genre or a TMDB keyword --
+# scoring alone pulls in Fast Times at Ridgemont High. Claude confirms here.
+taste_gate = true
+brief = """The canon of Black American cinema -- crime and street dramas,
+coming-of-age films, sharp comedies. Films with real craft behind them, not
+the direct-to-video filler the name is pushing back against."""
+target_size = 35
+
+[channel.charter]
+genres = ["Drama", "Crime", "Comedy"]
+exclude_genres = ["Animation", "Family"]
+keywords = ["gangster", "coming of age", "new york city", "hilarious", "satire"]
+years = [1985, 2015]
+
+[channel.discover]
+tmdb_genres = [18, 80, 35]
+
+#############################################################################
+# 5 - Adult Swim but funny
+#############################################################################
+[[channel]]
+number = "5"
+name = "Adult Swim but funny"
+collection = "adult animation comedy non linear"
+kind = "auto"
+brief = """Late-night adult animation that's actually funny -- absurdist,
+satirical, episodic. Nothing that needs you to have seen last week."""
+target_size = 30
+
+[channel.charter]
+# No `years` on purpose: era doesn't define this channel, tone does.
+require_genres = ["Animation"]
+genres = ["Comedy"]
+keywords = ["adult animation", "satire", "hilarious"]
+exclude_genres = ["Family"]
+ratings = ["TV-MA", "TV-14", "R"]
+
+[channel.reruns]
+skip_serialized = true  # the whole point of "non linear"
+
+[channel.discover]
+tmdb_genres = [16, 35]
+
+#############################################################################
+# 6 - HBO Comedy
+#############################################################################
+[[channel]]
+number = "6"
+name = "HBO Comedy"
+collection = "comedy/romcom films"
+kind = "movie"
+brief = """Comedies and romantic comedies -- broad studio comedy through to
+smarter romcoms. Live action only."""
+target_size = 50
+
+[channel.charter]
+require_genres = ["Comedy"]
+genres = ["Romance", "Drama"]
+exclude_genres = ["Animation", "Horror"]
+keywords = ["hilarious", "high school", "coming of age"]
+years = [1980, 2020]
+
+[channel.discover]
+tmdb_genres = [35, 10749]
+
+#############################################################################
+# 7 - Toonami
+#############################################################################
+[[channel]]
+number = "7"
+name = "Toonami"
+collection = "high animation"
+kind = "episode"
+brief = """The Toonami block: action animation and anime with real animation
+budget. Episodes must stand alone -- this is a rerun block, not a binge."""
+target_size = 120
+min_size = 40
+max_churn = 12
+
+[channel.charter]
+require_genres = ["Animation"]
+genres = ["Action", "Adventure", "Action & Adventure", "Sci-Fi & Fantasy"]
+keywords = ["anime", "based on manga", "superhero"]
+
+[channel.reruns]
+skip_finales = true
+skip_multipart = true
+skip_serialized = false  # much of Toonami is serialized; finales are the real hazard
+
+[channel.programming]
+# Two in-order episodes of a show, then move on -- the Toonami feel.
+order = "doubles"
+batch = 2
+
+[channel.discover]
+tmdb_genres = [16, 10759]
+
+#############################################################################
+# 8 - HBO Kids
+#############################################################################
+[[channel]]
+number = "8"
+name = "HBO Kids"
+collection = "kids shows"
+kind = "show"
+brief = """Kids programming -- gentle, colourful, safe to leave running."""
+target_size = 20
+min_size = 5
+
+[channel.charter]
+genres = ["Family", "Animation", "Comedy"]
+exclude_genres = ["Horror", "Crime", "Thriller"]
+exclude_keywords = ["adult animation", "anime"]
+# Without this, scoring cheerfully offers Aqua Teen Hunger Force and
+# Chainsaw Man: they are Animation + Comedy, and nothing else says "not kids".
+ratings = ["TV-Y", "TV-Y7", "TV-G", "TV-PG", "G", "PG"]
+
+[channel.discover]
+tmdb_genres = [10762, 16]
+
+#############################################################################
+# 9 - HBO Live Action
+#############################################################################
+[[channel]]
+number = "9"
+name = "HBO Live Action"
+collection = "live action mix"
+kind = "show"
+brief = """Live-action series -- comedy and drama, no animation."""
+target_size = 25
+min_size = 8
+
+[channel.charter]
+genres = ["Comedy", "Drama", "Action & Adventure", "Crime"]
+exclude_genres = ["Animation"]
+
+[channel.discover]
+tmdb_genres = [18, 35, 10759]
+
+#############################################################################
+# Block-fed collections
+#
+# These aren't bound to a channel schedule; your ErsatzTV Blocks point at
+# them (Block "shows without finales" -> collection below, and so on). The
+# curator keeps them fresh exactly the same way.
+#############################################################################
+
+[[channel]]
+number = "blk-superhero"
+name = "Superhero block"
+collection = "superhero shows without finales"
+kind = "episode"
+taste_gate = true
+brief = """Superhero animation, rerun-safe: no finales, no two-parters."""
+target_size = 80
+min_size = 24
+max_churn = 10
+
+[channel.charter]
+genres = ["Animation", "Action", "Action & Adventure", "Sci-Fi & Fantasy"]
+keywords = ["superhero", "based on comic", "dc comics", "marvel comic"]
+# Genres alone match every action anime in the library, so demand a real
+# superhero signal before anything joins.
+any_keywords = ["superhero", "based on comic", "dc comics", "marvel comic"]
+
+[channel.reruns]
+skip_finales = true
+skip_multipart = true
+skip_serialized = false
+
+[channel.programming]
+# Least-aired first, so the block opens on something you haven't just seen.
+# ErsatzTV can't express this -- it doesn't keep airplay history.
+order = "rested"
+
+[channel.discover]
+enabled = false  # curated purely from what's already on the shelf
+
+[[channel]]
+number = "blk-anime"
+name = "Action anime block"
+collection = "anime"
+kind = "show"
+brief = """Action anime with a real animation budget."""
+target_size = 20
+min_size = 6
+
+[channel.charter]
+require_genres = ["Animation"]
+genres = ["Action", "Action & Adventure", "Sci-Fi & Fantasy", "Adventure"]
+keywords = ["anime", "based on manga"]
+
+[channel.discover]
+tmdb_genres = [16, 10759]
+
+[[channel]]
+number = "blk-serious"
+name = "The serious films"
+collection = "the serious films"
+kind = "movie"
+brief = """Heavier, more considered films -- the ones you sit down for."""
+target_size = 50
+
+[channel.charter]
+genres = ["Drama", "Crime", "Mystery", "Thriller"]
+exclude_genres = ["Animation", "Family", "Comedy"]
+keywords = ["based on novel or book", "dramatic"]
+
+[channel.discover]
+tmdb_genres = [18, 80]
+
+[[channel]]
+number = "blk-linear-action"
+name = "Linear action shows"
+collection = "linear action shows"
+kind = "auto"
+brief = """Action series -- the ones with an ongoing plot, so order matters."""
+target_size = 45
+min_size = 12
+
+[channel.charter]
+genres = ["Action", "Action & Adventure", "Adventure", "Sci-Fi & Fantasy",
+          "Animation"]
+
+[channel.reruns]
+# This block is explicitly the serialized one, so serials are welcome; only
+# finales and two-parters are held back.
+skip_serialized = false
+skip_finales = true
+skip_multipart = true
+
+[channel.programming]
+order = "sequential"   # the block is the serialized one; play them in order
+
+[channel.discover]
+tmdb_genres = [10759, 16]

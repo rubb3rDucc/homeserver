@@ -397,6 +397,13 @@ services:
       # Cores a single render may use (Remotion defaults to ~all of them). Kept
       # low so a render burst never starves ErsatzTV's live transcoding.
       - RENDER_CONCURRENCY=2
+      # Chromium GL backend. Without this Remotion passes no --use-gl flag, so
+      # headless Chrome rasterizes every gradient/shadow/filter in SwiftShader on
+      # the CPU and decodes b-roll in software too. "angle-egl" uses the iGPU and
+      # enables VaapiVideoDecoder. Requires the /dev/dri device below.
+      # Set RENDER_GL=swangle to fall back to software rendering.
+      - RENDER_GL=angle-egl
+      - LIBVA_DRIVER_NAME=iHD # same driver ErsatzTV pins, for deterministic accel
       - ACCENT=#e50914 # brand accent color for all cards
       # Jellyfin token artwork. Put JELLYFIN_API_KEY in that same .env (never
       # committed); blank = tokens fall back to initials.
@@ -411,8 +418,66 @@ services:
       # - MUSIC_SRC=
       - OUTPUT=/station/library/junctions/now-next-later.mp4
       - FEATURE_DIR=/station/library/feature
+    devices:
+      # iGPU passthrough so Chromium can rasterize on the GPU and hardware-decode
+      # b-roll. Shared with ErsatzTV's VAAPI transcoding — renders are hourly and
+      # short, so contention is brief, but this is the knob to pull if live
+      # playout ever stutters during a render burst.
+      - /dev/dri:/dev/dri
     volumes:
       - ./media/station:/station
+    depends_on:
+      - ersatztv
+    restart: unless-stopped
+    networks:
+      - media-network
+
+  #############################################################################
+  # STATION-CURATOR - Programmer/curator for the channels. Rotates stale titles
+  # out of each ErsatzTV Collection, refills from the library per a charter in
+  # station-curator/charters.toml, keeps rerun blocks free of finales and
+  # two-parters, and shortlists new titles to /state/proposals.md.
+  #
+  # Its ONLY write is collection membership; ErsatzTV etags collections and
+  # rebuilds affected playouts itself, so schedules/blocks/filler are untouched.
+  # Dry run first:  docker compose ... run --rm -e CURATOR_DRY_RUN=1 station-curator
+  #############################################################################
+  station-curator:
+    build: ./station-curator
+    image: homeserver/station-curator:latest
+    container_name: station-curator
+    environment:
+      - TZ=America/New_York
+      - CURATOR_INTERVAL=21600 # 6h; the library changes slowly
+      - CURATOR_DRY_RUN=${CURATOR_DRY_RUN:-false}
+      - ERSATZTV_DB=/ersatztv/ersatztv.sqlite3
+      # Watch data -> rests anything you just watched on demand.
+      - JELLYFIN_URL=http://jellyfin:8096
+      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
+      # Used only to dedupe acquisition proposals against what you already own.
+      - RADARR_URL=http://radarr:7878
+      - RADARR_API_KEY=${RADARR_API_KEY:-}
+      - SONARR_URL=http://sonarr:8989
+      - SONARR_API_KEY=${SONARR_API_KEY:-}
+      # Free TMDB read key; blank = no acquisition shortlist, everything else runs.
+      - TMDB_API_KEY=${TMDB_API_KEY:-}
+      # Optional taste pass (serialized-show + charter-fit calls, cached
+      # forever). Blank = fully deterministic curation.
+      # Gemini is the default provider and needs no package -- it's plain REST.
+      # To use Claude instead, set CURATOR_LLM_PROVIDER=anthropic AND rebuild
+      # with --build-arg WITH_ANTHROPIC=1 (that backend needs its SDK).
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - CURATOR_LLM_PROVIDER=${CURATOR_LLM_PROVIDER:-}
+      # Blank = the provider's own default (gemini-2.5-flash / claude-opus-5).
+      - CURATOR_LLM_MODEL=${CURATOR_LLM_MODEL:-}
+      # Push when new titles are worth a look (same ntfy topic style as diskmon).
+      - CURATOR_NTFY_URL=${CURATOR_NTFY_URL:-}
+    volumes:
+      # Read-write: the curator edits CollectionItem rows and nothing else.
+      - ersatztv-config:/ersatztv
+      # Ledger + proposals.md, readable from the host.
+      - ./media/station/curator:/state
     depends_on:
       - ersatztv
     restart: unless-stopped
