@@ -11,17 +11,12 @@ different answers:
   what should be acquired      -- things not in the library at all, from TMDB
                                   Discover. Needs TMDB_API_KEY.
 
-Both land in one report so there's a single file to look at, plus what is
-currently resting on cooldown and why -- which is the other question worth
-being able to answer ("where did that film go?").
+The report covers only the second: what to acquire. What each channel
+currently holds, what it would add next and what is resting are all visible
+in ErsatzTV's own schedule, so repeating them here was noise.
 """
 
 from datetime import datetime, timezone
-
-
-def _fmt(entry) -> str:
-    title, why = entry
-    return f"- **{title}**" + (f" — {why}" if why else "")
 
 
 def write(path, channels, proposals, provider_note=""):
@@ -37,8 +32,9 @@ def write(path, channels, proposals, provider_note=""):
         "",
         f"_Generated {now.isoformat()}_",
         "",
-        "**Worth acquiring** is the part that needs you. Everything below it "
-        "is what the curator is already doing on its own.",
+        "Titles worth adding, per channel. Everything else the curator does "
+        "-- rotation, ordering, rerun safety -- it does on its own; the "
+        "schedule shows the result.",
         "",
     ]
 
@@ -67,39 +63,6 @@ def write(path, channels, proposals, provider_note=""):
             out.append("")
     else:
         out += [provider_note or "_Nothing outstanding._", ""]
-
-    out += ["---", "", "## Channel detail", "",
-            "_What each channel holds now, what it would add next from titles "
-            "you already own, and what is resting. Nothing here needs acting "
-            "on._", ""]
-    for ch in channels:
-        head = (f"### {ch['number']} — {ch['name']}\n"
-                f"`{ch['collection']}` · {ch['size']}/{ch['target']} items · "
-                f"{ch['kind']} · {ch['order']} · years {ch['years']}")
-        out += [head, ""]
-
-        if ch["added"]:
-            out += ["**Just added**", ""]
-            out += [_fmt(e) for e in ch["added"]] + [""]
-        if ch["retired"]:
-            out += ["**Just retired**", ""]
-            out += [_fmt(e) for e in ch["retired"]] + [""]
-
-        if ch["next_up"]:
-            label = "**Next up** — clears the charter, waiting on room/pacing"
-            if ch["taste_gate"]:
-                label += " (a taste check runs before these are added)"
-            out += [label, ""]
-            out += [_fmt(e) for e in ch["next_up"]] + [""]
-        elif ch["size"] >= ch["target"]:
-            out += ["_At target; nothing queued._", ""]
-        else:
-            out += ["_Nothing else in the library clears this charter._", ""]
-
-        if ch["resting"]:
-            out += ["<details><summary>Resting "
-                    f"({len(ch['resting'])})</summary>", ""]
-            out += [_fmt(e) for e in ch["resting"]] + ["", "</details>", ""]
 
     path.parent.mkdir(parents=True, exist_ok=True)
     markdown = "\n".join(out) + "\n"

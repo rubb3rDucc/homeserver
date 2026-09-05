@@ -396,9 +396,6 @@ def curate(channel, etv, ledger, library, episodes_by_show, episodes_by_id,
                   if channel.programming.order in program.CURATED
                   else "ErsatzTV playback order"),
         "taste_gate": channel.taste_gate,
-        "years": (f"{channel.charter.years[0]}-{channel.charter.years[1]}"
-                  + (" (strict)" if channel.charter.years_strict else "")
-                  if channel.charter.years else "any"),
         # What the channel actually plays -- the context an LLM needs to
         # suggest more of the same. Titles only, deduped for episodes.
         "playing": sorted({(library[m].title if m in library
