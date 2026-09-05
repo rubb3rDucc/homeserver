@@ -37,13 +37,41 @@ def write(path, channels, proposals, provider_note=""):
         "",
         f"_Generated {now.isoformat()}_",
         "",
-        "What each channel is playing, what it would add next, and what is "
-        "resting. Nothing here needs acting on — the curator applies it "
-        "itself, a few titles per cycle so a channel never lurches.",
+        "**Worth acquiring** is the part that needs you. Everything below it "
+        "is what the curator is already doing on its own.",
         "",
     ]
 
-    out += ["## Channels", ""]
+    # Acquisitions first: this is the part that needs a human, so it leads.
+    out += ["## Worth acquiring", ""]
+    if proposals:
+        out += ["Not in your library yet. Add what you want in Radarr/Sonarr "
+                "(or drop the file in and let Jellyfin scan it) — the curator "
+                "sees it on the next cycle, clears it from this list, and puts "
+                "it on the channel automatically.", ""]
+        by_channel = {}
+        for row in proposals:
+            by_channel.setdefault(row["collection"], []).append(row)
+        for name, rows in by_channel.items():
+            ch = next((c for c in channels if c["collection"] == name), None)
+            heading = (f"### {ch['number']} — {ch['name']}" if ch
+                       else f"### {name}")
+            out += [heading, f"`{name}`", ""]
+            for row in rows:
+                year = f" ({row['year']})" if row["year"] else ""
+                kind = "movie" if row["source"].endswith("movie") else "tv"
+                out.append(
+                    f"- **{row['title']}**{year} — {row['reason']}  \n"
+                    f"  https://www.themoviedb.org/{kind}/{row['ext_id']}"
+                )
+            out.append("")
+    else:
+        out += [provider_note or "_Nothing outstanding._", ""]
+
+    out += ["---", "", "## Channel detail", "",
+            "_What each channel holds now, what it would add next from titles "
+            "you already own, and what is resting. Nothing here needs acting "
+            "on._", ""]
     for ch in channels:
         head = (f"### {ch['number']} — {ch['name']}\n"
                 f"`{ch['collection']}` · {ch['size']}/{ch['target']} items · "
@@ -72,26 +100,6 @@ def write(path, channels, proposals, provider_note=""):
             out += ["<details><summary>Resting "
                     f"({len(ch['resting'])})</summary>", ""]
             out += [_fmt(e) for e in ch["resting"]] + ["", "</details>", ""]
-
-    out += ["## Worth acquiring", ""]
-    if proposals:
-        out += ["Not in the library. Nothing has been downloaded — add what "
-                "you want in Radarr/Sonarr and the curator picks it up on the "
-                "next cycle.", ""]
-        current = None
-        for row in proposals:
-            if row["collection"] != current:
-                current = row["collection"]
-                out += [f"### {current}", ""]
-            year = f" ({row['year']})" if row["year"] else ""
-            kind = "movie" if row["source"].endswith("movie") else "tv"
-            out.append(
-                f"- **{row['title']}**{year} — {row['reason']}  \n"
-                f"  https://www.themoviedb.org/{kind}/{row['ext_id']}"
-            )
-        out.append("")
-    else:
-        out += [provider_note or "_Nothing outstanding._", ""]
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(out) + "\n", encoding="utf-8")

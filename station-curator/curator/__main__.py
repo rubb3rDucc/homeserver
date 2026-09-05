@@ -389,13 +389,13 @@ def shortlist(channel, env, library, ledger, llm, owned, playing, budget):
     twelve channels asking every six hours exhausts it.
     """
     if not channel.discover.enabled:
-        return 0
+        return []
     kind = "movie" if channel.kind == "movie" else "show"
     seen = ledger.already_proposed(f"tmdb-{kind}", channel.collection)
 
     if channel.discover.source == "llm":
         if not llm.enabled or budget[0] <= 0:
-            return 0
+            return []
         before = llm.calls
         found = [c for c in discover.suggested_for(
             channel, env, llm, library, playing, owned[kind])
@@ -405,11 +405,11 @@ def shortlist(channel, env, library, ledger, llm, owned, playing, budget):
             budget[0] -= 1
     else:
         if not env.tmdb_key:
-            return 0
+            return []
         found = [c for c in discover.candidates_for(
             channel, env, library, owned[kind]) if c["id"] not in seen]
     if not found:
-        return 0
+        return []
 
     found = found[: channel.discover.limit]
     verdicts = llm.vibe_filter(channel.collection, channel.brief or channel.name,
