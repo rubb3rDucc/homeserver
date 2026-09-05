@@ -159,6 +159,37 @@ needs no package at all (plain REST over stdlib `urllib`, structured output via
 which needs its SDK: rebuild with `--build-arg WITH_ANTHROPIC=1`. The cache is
 provider-agnostic, so switching doesn't re-ask what's already been answered.
 
+### Switching to Claude
+
+Two settings and one rebuild flag. The Anthropic SDK is not in the image by
+default -- that is what keeps the container dependency-free -- so the switch
+needs `--build-arg WITH_ANTHROPIC=1`:
+
+```bash
+# 1. in the server .env
+ANTHROPIC_API_KEY=sk-ant-...
+CURATOR_LLM_PROVIDER=anthropic
+
+# 2. rebuild with the SDK, then restart
+docker compose -f docker-compose.complete-homeserver.yml \
+  build --build-arg WITH_ANTHROPIC=1 station-curator
+docker compose -f docker-compose.complete-homeserver.yml up -d station-curator
+```
+
+Forget the build arg and the curator logs an explicit error naming that
+command, then runs deterministically rather than pretending it has no
+opinions. Switching back to Gemini is just the two env vars again; the
+rebuilt image keeps working either way.
+
+**The cache is provider-agnostic**, so switching does not re-ask anything
+already answered -- the 87 show classifications and every taste verdict
+carry over. Only genuinely new questions go to the new provider.
+
+Defaults to `claude-opus-5`; override with `CURATOR_LLM_MODEL`. Requests use
+`effort: "low"` (these are simple classifications) and structured outputs, and
+deliberately send no `temperature` or `budget_tokens` -- both are rejected on
+Opus 5.
+
 **Model choice, learned the hard way.** `gemini-2.5-flash` returns 404 for new
 keys ("no longer available to new users"), and `gemini-flash-latest` served
 repeated 503s under the real 87-show batch. The default is `gemini-3.6-flash`,

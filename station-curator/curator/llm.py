@@ -127,9 +127,16 @@ class LLM:
             try:
                 import anthropic
             except ImportError:
-                log.warning(
-                    "anthropic SDK missing -- running deterministically"
+                # Loud and actionable: the switch is env-vars plus a rebuild
+                # flag, and forgetting the flag would otherwise look like the
+                # curator quietly deciding it has no opinions.
+                log.error(
+                    "CURATOR_LLM_PROVIDER=anthropic but the SDK isn't in this "
+                    "image. Rebuild with:  docker compose -f "
+                    "docker-compose.complete-homeserver.yml build "
+                    "--build-arg WITH_ANTHROPIC=1 station-curator"
                 )
+                log.warning("running deterministically until then")
                 self.provider = "none"
                 return
             self.client = anthropic.Anthropic(api_key=api_key)

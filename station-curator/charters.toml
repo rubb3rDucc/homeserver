@@ -123,7 +123,7 @@ genres = ["Family", "Adventure", "Comedy", "Fantasy"]
 exclude_keywords = ["adult animation"]
 # ContentRating is the reliable gate here; the "adult animation" tag is sparse.
 ratings = ["G", "PG", "TV-Y", "TV-Y7", "TV-G", "TV-PG"]
-years = [2000, 2030]
+years = [1930, 2030]
 
 [channel.discover]
 tmdb_genres = [16]
@@ -147,8 +147,8 @@ target_size = 35
 [channel.charter]
 genres = ["Drama", "Crime", "Comedy"]
 exclude_genres = ["Animation", "Family"]
-keywords = ["gangster", "coming of age", "new york city", "hilarious", "satire"]
-years = [1985, 2015]
+keywords = ["gangster", "coming of age", "new york city", "los angeles" "hilarious", "satire"]
+years = [1960, 2026]
 
 [channel.discover]
 tmdb_genres = [18, 80, 35]
@@ -196,7 +196,7 @@ require_genres = ["Comedy"]
 genres = ["Romance", "Drama"]
 exclude_genres = ["Animation", "Horror"]
 keywords = ["hilarious", "high school", "coming of age"]
-years = [1980, 2020]
+years = [1970, 2026]
 
 [channel.discover]
 tmdb_genres = [35, 10749]
@@ -354,7 +354,7 @@ brief = """Heavier, more considered films -- the ones you sit down for."""
 target_size = 50
 
 [channel.charter]
-genres = ["Drama", "Crime", "Mystery", "Thriller"]
+genres = ["Drama", "Crime", "Mystery", "Thriller", "Horror"]
 exclude_genres = ["Animation", "Family", "Comedy"]
 keywords = ["based on novel or book", "dramatic"]
 
