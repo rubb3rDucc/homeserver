@@ -431,34 +431,39 @@ def shortlist(channel, env, library, ledger, llm, owned, playing, budget):
     return added
 
 
-def _push_body(proposed, total, limit=12) -> str:
+def _push_body(proposed, total, names=None, limit=420) -> str:
     """
-    A phone notification is useless if it only says "10 new suggestions".
+    A phone notification is a glance, not a document.
 
-    Groups the actual titles under their channel, newest first, and says how
-    many more are waiting in the report rather than silently truncating.
+    The notification shade shows only a few lines before it truncates, so
+    this is one compact line per channel -- a couple of titles and a count --
+    kept under `limit` characters. The full list is in the report.
     """
+    names = names or {}
     by_channel = {}
     for collection, title, year in proposed:
-        by_channel.setdefault(collection, []).append(
-            f"{title} ({year})" if year else title)
+        # Channel name reads better on a phone than the collection slug.
+        by_channel.setdefault(names.get(collection, collection),
+                              []).append(title)
 
-    lines, shown = [], 0
+    lines, used, skipped = [], 0, 0
     for collection, titles in by_channel.items():
-        lines.append(f"{collection}:")
-        for title in titles:
-            if shown >= limit:
-                break
-            lines.append(f"  \u2022 {title}")
-            shown += 1
-        if shown >= limit:
-            break
+        if used >= limit:
+            skipped += 1
+            continue
+        # Two example titles is enough to convey the flavour.
+        head = ", ".join(titles[:2])
+        extra = len(titles) - 2
+        line = f"{collection}: {head}" + (f" +{extra}" if extra > 0 else "")
+        if used + len(line) > limit:
+            skipped += 1
+            continue
+        lines.append(line)
+        used += len(line) + 1
 
-    remaining = len(proposed) - shown
-    if remaining > 0:
-        lines.append(f"  ...and {remaining} more")
-    if total > len(proposed):
-        lines.append(f"\n{total} outstanding in report.md")
+    if skipped:
+        lines.append(f"+{skipped} more channel(s)")
+    lines.append(f"\n{total} waiting in report.md")
     return "\n".join(lines)
 
 
@@ -549,7 +554,9 @@ def cycle(env, channels):
                      len(proposed), total, env.report)
             discover.notify(env.ntfy_url,
                             f"{len(proposed)} new title(s) to consider",
-                            _push_body(proposed, total))
+                            _push_body(
+                                proposed, total,
+                                {c.collection: c.name for c in channels}))
         if llm.calls:
             log.info("%s calls this cycle: %d", llm.provider, llm.calls)
     finally:
