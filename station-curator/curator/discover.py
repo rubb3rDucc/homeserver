@@ -144,6 +144,95 @@ def candidates_for(channel, env, library, owned_ids) -> list[dict]:
     return fresh
 
 
+def resolve(base_url: str, api_key: str, kind: str, title: str, year=None):
+    """
+    Resolve a title through Radarr/Sonarr's own lookup.
+
+    This is what makes LLM suggestions safe to act on. Radarr proxies TMDB, so
+    a real film comes back with a real tmdbId, rating and vote count -- and an
+    invented one comes back as an empty list. Every suggestion goes through
+    here, so a hallucinated title can't reach the shortlist.
+
+    It also means no TMDB_API_KEY is needed for this path at all: Radarr and
+    Sonarr already hold that credential.
+    """
+    if not api_key:
+        return None
+    path = "movie" if kind == "movie" else "series"
+    try:
+        results = request(
+            f"{base_url}/api/v3/{path}/lookup",
+            headers={"X-Api-Key": api_key},
+            params={"term": title},
+            timeout=30,
+        ) or []
+    except HttpError as exc:
+        log.warning("lookup failed for %r: %s", title, exc)
+        return None
+
+    want = normalise(title)
+    for entry in results:
+        got = normalise(entry.get("title") or "")
+        if got != want:
+            continue
+        got_year = entry.get("year")
+        # A year that disagrees by more than a year is a different film.
+        if year and got_year and abs(int(got_year) - int(year)) > 1:
+            continue
+        ratings = (entry.get("ratings") or {}).get("tmdb") or {}
+        return {
+            "id": str(entry.get("tmdbId") or entry.get("tvdbId") or ""),
+            "title": entry.get("title"),
+            "year": got_year,
+            "overview": entry.get("overview") or "",
+            "rating": ratings.get("value"),
+            "votes": ratings.get("votes"),
+        }
+    return None
+
+
+def suggested_for(channel, env, llm, library, playing, owned_ids):
+    """
+    LLM-suggested candidates for one channel, resolved and deduped.
+
+    The model proposes; Radarr/Sonarr verify; the library and the ledger
+    filter. Anything that doesn't survive all three is dropped silently.
+    """
+    ideas = llm.suggest(channel, playing)
+    if not ideas:
+        return []
+
+    kind = "movie" if channel.kind == "movie" else "show"
+    base = env.radarr_url if kind == "movie" else env.sonarr_url
+    key = env.radarr_key if kind == "movie" else env.sonarr_key
+
+    have = {(normalise(i.title), i.year) for i in library.values()}
+    have_titles = {t for t, _ in have}
+
+    out, dropped = [], 0
+    for idea in ideas:
+        found = resolve(base, key, kind, idea.get("title", ""),
+                        idea.get("year"))
+        if not found or not found["id"]:
+            dropped += 1
+            continue
+        if found["id"] in owned_ids:
+            continue
+        norm = normalise(found["title"])
+        if (norm, found["year"]) in have or norm in have_titles:
+            continue
+        if channel.charter.years and found["year"]:
+            low, high = channel.charter.years
+            if not (low <= int(found["year"]) <= high):
+                continue
+        found["why"] = (idea.get("why") or "").strip()
+        out.append(found)
+    if dropped:
+        log.info("    %d suggestion(s) didn't resolve to a real title",
+                 dropped)
+    return out
+
+
 def retire_acquired(ledger, library) -> list[str]:
     """
     Drop suggestions for titles that are now in the library.

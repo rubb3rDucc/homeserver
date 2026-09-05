@@ -92,6 +92,12 @@ class Programming:
 class Discover:
     """How to look for things you don't own yet (proposals only)."""
     enabled: bool = True
+    # "llm"  -> ask the model what belongs, then verify every title through
+    #           Radarr/Sonarr lookup. Better taste than genre filters, and
+    #           needs no TMDB key (the *arrs already hold that credential).
+    # "tmdb" -> TMDB Discover with the charter's genre/keyword filters.
+    #           Needs TMDB_API_KEY.
+    source: str = "llm"
     tmdb_genres: tuple = ()         # TMDB genre ids
     tmdb_keywords: tuple = ()       # TMDB keyword ids
     min_votes: int = 200

@@ -367,6 +367,11 @@ def curate(channel, etv, ledger, library, episodes_by_show, episodes_by_id,
                   if channel.programming.order in program.CURATED
                   else "ErsatzTV playback order"),
         "taste_gate": channel.taste_gate,
+        # What the channel actually plays -- the context an LLM needs to
+        # suggest more of the same. Titles only, deduped for episodes.
+        "playing": sorted({(library[m].title if m in library
+                            else label(m).split(" S")[0])
+                           for m in (members | set(joining))}),
         "added": [(label(m), "") for m in joining],
         "retired": [(label(m), r) for m, r in leaving],
         "next_up": [(label(m), "") for m in eligible[len(joining):][:12]],
@@ -377,15 +382,23 @@ def curate(channel, etv, ledger, library, episodes_by_show, episodes_by_id,
 # --------------------------------------------------------------------------- #
 # Acquisition shortlist
 # --------------------------------------------------------------------------- #
-def shortlist(channel, env, library, ledger, llm, owned):
-    if not channel.discover.enabled or not env.tmdb_key:
+def shortlist(channel, env, library, ledger, llm, owned, playing):
+    if not channel.discover.enabled:
         return 0
     kind = "movie" if channel.kind == "movie" else "show"
     seen = ledger.already_proposed(f"tmdb-{kind}", channel.collection)
-    found = [
-        c for c in discover.candidates_for(channel, env, library, owned[kind])
-        if c["id"] not in seen
-    ]
+
+    if channel.discover.source == "llm":
+        if not llm.enabled:
+            return 0
+        found = [c for c in discover.suggested_for(
+            channel, env, llm, library, playing, owned[kind])
+            if c["id"] not in seen]
+    else:
+        if not env.tmdb_key:
+            return 0
+        found = [c for c in discover.candidates_for(
+            channel, env, library, owned[kind]) if c["id"] not in seen]
     if not found:
         return 0
 
@@ -398,7 +411,10 @@ def shortlist(channel, env, library, ledger, llm, owned):
         # Unjudged candidates are kept: the LLM narrows, it doesn't gatekeep.
         if verdicts.get(cand["id"]) is False:
             continue
-        reason = f"{cand['rating']}/10 from {cand['votes']} votes"
+        reason = cand.get("why") or ""
+        if cand.get("rating"):
+            score_txt = f"{cand['rating']}/10 from {cand['votes']} votes"
+            reason = f"{reason} ({score_txt})" if reason else score_txt
         if ledger.propose(f"tmdb-{kind}", cand["id"], channel.collection,
                           cand["title"], cand["year"],
                           cand.get("rating") or 0.0, reason):
@@ -466,7 +482,8 @@ def cycle(env, channels):
                          collections, llm, serials)
             if row:
                 rows.append(row)
-            proposed += shortlist(channel, env, library, ledger, llm, owned)
+            proposed += shortlist(channel, env, library, ledger, llm, owned,
+                                  row["playing"] if row else [])
 
         note = ("_Nothing outstanding._" if env.tmdb_key else
                 "_No `TMDB_API_KEY` set, so the curator can't look outside "

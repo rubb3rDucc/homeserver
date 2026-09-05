@@ -33,7 +33,7 @@ import logging
 log = logging.getLogger("curator.program")
 
 # Orders the curator writes itself.
-CURATED = {"rested", "heavy", "doubles", "sequential", "shuffle"}
+CURATED = {"rested", "heavy", "doubles", "sequential", "shuffle", "era"}
 # Sentinels: leave ErsatzTV's own playback order alone / hand control back.
 NONE = "none"
 HANDBACK = "ersatztv"
@@ -90,6 +90,19 @@ def arrange(channel, media_ids, *, library, episodes_by_id, airings):
 
     if order == "shuffle":
         return _stable_shuffle(ids, channel.collection)
+
+    if order == "era":
+        # Period-accurate programming: drift forward through time instead of
+        # cutting from 1985 to 2024 and back. Grouped by decade, shuffled
+        # within it, so a block feels of-its-era without being predictable.
+        def year_of(mid):
+            item = library.get(mid)
+            if item is None and mid in episodes_by_id:
+                item = library.get(episodes_by_id[mid].show_id)
+            return (item.year or 0) if item else 0
+        spread = {m: i for i, m in
+                  enumerate(_stable_shuffle(ids, channel.collection))}
+        return sorted(ids, key=lambda m: (year_of(m) // 10, spread[m]))
 
     if order in ("rested", "heavy"):
         # Ties broken by the stable shuffle so equally-aired titles don't

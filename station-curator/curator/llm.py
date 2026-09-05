@@ -57,6 +57,25 @@ _SERIAL_SCHEMA = {
     "required": ["shows"],
 }
 
+_SUGGEST_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "suggestions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "year": {"type": "integer"},
+                    "why": {"type": "string"},
+                },
+                "required": ["title", "year", "why"],
+            },
+        }
+    },
+    "required": ["suggestions"],
+}
+
 _VIBE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -318,4 +337,48 @@ class LLM:
             self.ledger.cache_set(
                 f"vibe:{namespace}:{collection}:{ext_id}", "1" if fits else "0"
             )
+        return out
+
+    # ---- discovery -------------------------------------------------------- #
+    def suggest(self, channel, playing, limit=12):
+        """
+        Ask for titles that belong on this channel, given what it plays.
+
+        This is a much better recommender than TMDB genre filters -- "films
+        like Menace II Society" is exactly the query metadata can't express.
+        The catch is hallucination: models invent plausible titles. So nothing
+        here is trusted. Every suggestion is resolved against Radarr/Sonarr
+        (which return no match for an invented film) before it can become a
+        proposal -- see discover.resolve.
+
+        Cached on the channel plus a fingerprint of what it's playing, so a
+        channel is only re-asked once its line-up has actually changed.
+        """
+        if not self.enabled:
+            return []
+
+        fingerprint = str(abs(hash(tuple(sorted(playing)))) % 10**12)
+        key = f"suggest:{channel.collection}:{fingerprint}"
+        hit = self.ledger.cache_get(key)
+        if hit is not None:
+            return json.loads(hit)
+
+        era = ""
+        if channel.charter.years:
+            low, high = channel.charter.years
+            era = (f"\nStay within {low}-{high}; a title outside that window "
+                   "is not useful here.")
+        listing = "\n".join(f"- {t}" for t in sorted(playing)[:40])
+        prompt = (
+            f"A TV channel is described as: {channel.brief or channel.name!r}"
+            f"{era}\n\nIt currently plays:\n{listing}\n\n"
+            f"Suggest {limit} more {'films' if channel.kind == 'movie' else 'series'} "
+            "that genuinely belong on this channel -- the same sensibility, "
+            "not merely the same genre. Do not repeat anything listed above.\n\n"
+            "Only real, released titles. Give the exact release year. If you "
+            "are unsure a title exists, leave it out."
+        )
+        data = self._ask(prompt, _SUGGEST_SCHEMA)
+        out = (data or {}).get("suggestions", [])
+        self.ledger.cache_set(key, json.dumps(out))
         return out
