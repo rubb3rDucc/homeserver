@@ -646,6 +646,15 @@ def main():
 
     while not _stop:
         started = time.monotonic()
+        # Re-read the charters each cycle, so an edit applies without a
+        # restart. A file that doesn't parse keeps the last good config
+        # rather than taking the service down -- charters are hand-edited,
+        # and a missing comma should cost you one cycle, not the daemon.
+        try:
+            channels = load_channels(env.charters)
+        except Exception as exc:  # noqa: BLE001
+            log.error("charters.toml not usable (%s) -- keeping the previous "
+                      "config; fix it and the next cycle picks it up", exc)
         try:
             cycle(env, channels)
         except Exception:  # keep the daemon alive across a bad cycle

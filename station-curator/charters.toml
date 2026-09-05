@@ -147,7 +147,7 @@ target_size = 35
 [channel.charter]
 genres = ["Drama", "Crime", "Comedy"]
 exclude_genres = ["Animation", "Family"]
-keywords = ["gangster", "coming of age", "new york city", "los angeles" "hilarious", "satire"]
+keywords = ["gangster", "coming of age", "new york city", "los angeles", "hilarious", "satire"]
 years = [1960, 2026]
 
 [channel.discover]
