@@ -75,7 +75,7 @@ def write(path, channels, proposals, provider_note=""):
     for ch in channels:
         head = (f"### {ch['number']} — {ch['name']}\n"
                 f"`{ch['collection']}` · {ch['size']}/{ch['target']} items · "
-                f"{ch['kind']} · {ch['order']}")
+                f"{ch['kind']} · {ch['order']} · years {ch['years']}")
         out += [head, ""]
 
         if ch["added"]:

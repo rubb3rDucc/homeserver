@@ -484,6 +484,11 @@ services:
     ports:
       - "8477:8477" # curator report (read-only page)
     volumes:
+      # Charters are meant to be hand-edited, so mount the repo copy rather
+      # than baking it in: edit station-curator/charters.toml, then
+      #   docker restart station-curator
+      # No rebuild needed.
+      - ./station-curator/charters.toml:/app/charters.toml:ro
       # Read-write: the curator edits CollectionItem rows and nothing else.
       - ersatztv-config:/ersatztv
       # Ledger + proposals.md, readable from the host.
