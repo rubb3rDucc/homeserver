@@ -383,6 +383,12 @@ class LLM:
             "are unsure a title exists, leave it out."
         )
         data = self._ask(prompt, _SUGGEST_SCHEMA)
-        out = (data or {}).get("suggestions", [])
-        self.ledger.cache_set(key, json.dumps(out))
+        if data is None:
+            # The call failed -- quota, overload, a bad response. Caching the
+            # empty result here would poison this channel for the whole TTL,
+            # so it stays uncached and is simply retried next cycle.
+            return []
+        out = data.get("suggestions", [])
+        if out:
+            self.ledger.cache_set(key, json.dumps(out))
         return out
