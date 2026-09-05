@@ -26,6 +26,7 @@ across shows so a channel doesn't play six of one series back to back.
 
 import logging
 import signal
+import threading
 import sys
 import time
 from collections import defaultdict
@@ -46,6 +47,34 @@ logging.basicConfig(
 log = logging.getLogger("curator")
 
 _stop = False
+
+
+def serve_report(directory, port: int):
+    """
+    Serve the report over HTTP so it can be read in a browser.
+
+    Reachable on the tailnet as http://optiplex:PORT -- no ssh, and the ntfy
+    push links straight to it. Read-only, and it only ever exposes the state
+    directory (report + ledger), which is a list of film titles.
+    """
+    from functools import partial
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(SimpleHTTPRequestHandler):
+        def do_GET(self):
+            if self.path in ("/", "/index.html"):
+                self.path = "/report.html"
+            return super().do_GET()
+
+        def log_message(self, *args):
+            pass   # don't narrate every page view into the cycle log
+
+    handler = partial(Handler, directory=str(directory))
+    server = ThreadingHTTPServer(("0.0.0.0", port), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    log.info("report served on port %d", port)
+    return server
 
 
 def _handle_signal(signum, _frame):
@@ -431,40 +460,67 @@ def shortlist(channel, env, library, ledger, llm, owned, playing, budget):
     return added
 
 
-def _push_body(proposed, total, names=None, limit=420) -> str:
+def _push_pages(proposed, total, names=None, per_page=8, max_pages=8):
     """
-    A phone notification is a glance, not a document.
+    Split the proposals into notification-sized pages.
 
-    The notification shade shows only a few lines before it truncates, so
-    this is one compact line per channel -- a couple of titles and a count --
-    kept under `limit` characters. The full list is in the report.
+    A phone shade truncates a long body, so rather than cutting the list off
+    the titles are paginated: each push carries a handful, and they keep
+    coming until the list is exhausted. Pages are numbered so a gap is
+    obvious if one goes missing.
+
+    `max_pages` is a spam guard -- past it, the remainder is left to the
+    report rather than filling your lock screen.
     """
     names = names or {}
     by_channel = {}
     for collection, title, year in proposed:
-        # Channel name reads better on a phone than the collection slug.
+        label = f"{title} ({year})" if year else title
         by_channel.setdefault(names.get(collection, collection),
-                              []).append(title)
+                              []).append(label)
 
-    lines, used, skipped = [], 0, 0
-    for collection, titles in by_channel.items():
-        if used >= limit:
-            skipped += 1
-            continue
-        # Two example titles is enough to convey the flavour.
-        head = ", ".join(titles[:2])
-        extra = len(titles) - 2
-        line = f"{collection}: {head}" + (f" +{extra}" if extra > 0 else "")
-        if used + len(line) > limit:
-            skipped += 1
-            continue
-        lines.append(line)
-        used += len(line) + 1
+    # Flatten to lines, keeping a channel header above its own titles.
+    lines = []
+    for channel, titles in by_channel.items():
+        lines.append(("head", channel))
+        lines += [("item", t) for t in titles]
 
-    if skipped:
-        lines.append(f"+{skipped} more channel(s)")
-    lines.append(f"\n{total} waiting in report.md")
-    return "\n".join(lines)
+    pages, current, items = [], [], 0
+    for kind, text in lines:
+        if items >= per_page and kind == "head":
+            pages.append(current)
+            current, items = [], 0
+        current.append((kind, text))
+        if kind == "item":
+            items += 1
+            if items >= per_page:
+                pages.append(current)
+                current, items = [], 0
+                # Carry the channel header onto the next page for context.
+                head = next((t for k, t in reversed(pages[-1])
+                             if k == "head"), None)
+                if head:
+                    current.append(("head", f"{head} (cont.)"))
+    if current and any(k == "item" for k, _ in current):
+        pages.append(current)
+
+    dropped = 0
+    if len(pages) > max_pages:
+        dropped = sum(1 for page in pages[max_pages:]
+                      for k, _ in page if k == "item")
+        pages = pages[:max_pages]
+
+    out = []
+    for index, page in enumerate(pages, 1):
+        body = []
+        for kind, text in page:
+            body.append(text + ":" if kind == "head" else f"  \u2022 {text}")
+        if index == len(pages):
+            if dropped:
+                body.append(f"\n+{dropped} more in report.md")
+            body.append(f"\n{total} outstanding")
+        out.append((f"New titles ({index}/{len(pages)})", "\n".join(body)))
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -552,11 +608,15 @@ def cycle(env, channels):
         if proposed:
             log.info("%d new proposal(s); %d outstanding -> %s",
                      len(proposed), total, env.report)
-            discover.notify(env.ntfy_url,
-                            f"{len(proposed)} new title(s) to consider",
-                            _push_body(
-                                proposed, total,
-                                {c.collection: c.name for c in channels}))
+            pages = _push_pages(
+                proposed, total,
+                {c.collection: c.name for c in channels},
+                per_page=env.ntfy_per_push)
+            for subject, body in pages:
+                discover.notify(env.ntfy_url, subject, body,
+                                click=env.report_url)
+                if len(pages) > 1:
+                    time.sleep(1)   # be kind to ntfy.sh
         if llm.calls:
             log.info("%s calls this cycle: %d", llm.provider, llm.calls)
     finally:
@@ -570,6 +630,11 @@ def main():
 
     env = load_env()
     channels = load_channels(env.charters)
+    if env.report_port:
+        try:
+            serve_report(env.report.parent, env.report_port)
+        except OSError as exc:
+            log.warning("could not serve the report (%s)", exc)
     log.info("station-curator up. %d channel(s), every %ss%s",
              len(channels), env.interval, "  [DRY RUN]" if env.dry_run else "")
 

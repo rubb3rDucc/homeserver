@@ -473,6 +473,16 @@ services:
       - CURATOR_LLM_MODEL=${CURATOR_LLM_MODEL:-}
       # Push when new titles are worth a look (same ntfy topic style as diskmon).
       - CURATOR_NTFY_URL=${CURATOR_NTFY_URL:-}
+      # Titles per notification; the list is paginated across as many pushes
+      # as it takes rather than truncated.
+      - CURATOR_NTFY_PER_PUSH=${CURATOR_NTFY_PER_PUSH:-8}
+      # The report is served as a web page so it can be read without ssh.
+      # CURATOR_REPORT_URL is what tapping a phone notification opens, so it
+      # must be reachable from the phone -- use the tailnet name.
+      - CURATOR_REPORT_PORT=8477
+      - CURATOR_REPORT_URL=${CURATOR_REPORT_URL:-http://optiplex:8477/}
+    ports:
+      - "8477:8477" # curator report (read-only page)
     volumes:
       # Read-write: the curator edits CollectionItem rows and nothing else.
       - ersatztv-config:/ersatztv

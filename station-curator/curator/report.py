@@ -102,5 +102,86 @@ def write(path, channels, proposals, provider_note=""):
             out += [_fmt(e) for e in ch["resting"]] + ["", "</details>", ""]
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    markdown = "\n".join(out) + "\n"
+    path.write_text(markdown, encoding="utf-8")
+    # A browser-readable copy next to it, so the report can be opened over
+    # the tailnet instead of catted over ssh.
+    path.with_suffix(".html").write_text(_html(markdown), encoding="utf-8")
     return len(channels)
+
+
+_CSS = """
+:root { color-scheme: light dark; }
+body { font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+       margin: 0 auto; padding: 1.25rem 1rem 4rem; max-width: 46rem;
+       background: #fbfbfa; color: #1a1a1a; }
+@media (prefers-color-scheme: dark) {
+  body { background: #16161a; color: #e8e8ea; }
+  a { color: #7fb0ff; } h2 { border-color: #33333a !important; }
+  li { border-color: #2a2a30 !important; }
+}
+h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+h2 { font-size: 1.15rem; margin: 2rem 0 .75rem; padding-bottom: .3rem;
+     border-bottom: 1px solid #e2e2df; }
+h3 { font-size: 1rem; margin: 1.4rem 0 .4rem; }
+ul { list-style: none; padding: 0; margin: 0; }
+li { padding: .55rem 0; border-bottom: 1px solid #ececea; }
+a { color: #0b57d0; text-decoration: none; word-break: break-all; }
+code { background: rgba(127,127,127,.16); padding: .1rem .35rem;
+       border-radius: 4px; font-size: .85em; }
+em { opacity: .75; }
+hr { border: 0; border-top: 1px solid #ddd; margin: 2.5rem 0; }
+details { margin: .5rem 0; }
+summary { cursor: pointer; opacity: .75; }
+"""
+
+
+def _inline(text: str) -> str:
+    """Escape, then apply the small subset of markdown the report emits."""
+    import html
+    import re
+    text = html.escape(text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+    text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
+    text = re.sub(r"_(.+?)_", r"<em>\1</em>", text)
+    text = re.sub(r"(https?://\S+)", r'<a href="\1">\1</a>', text)
+    return text
+
+
+def _html(markdown: str) -> str:
+    """Render the report to a standalone, phone-friendly page."""
+    body, in_list = [], False
+    for raw in markdown.splitlines():
+        line = raw.rstrip()
+        if line.startswith("- "):
+            if not in_list:
+                body.append("<ul>")
+                in_list = True
+            body.append(f"<li>{_inline(line[2:].strip())}</li>")
+            continue
+        if in_list:
+            body.append("</ul>")
+            in_list = False
+        if not line:
+            continue
+        if line.startswith("### "):
+            body.append(f"<h3>{_inline(line[4:])}</h3>")
+        elif line.startswith("## "):
+            body.append(f"<h2>{_inline(line[3:])}</h2>")
+        elif line.startswith("# "):
+            body.append(f"<h1>{_inline(line[2:])}</h1>")
+        elif line.startswith("---"):
+            body.append("<hr>")
+        elif line.startswith("<details") or line.startswith("</details"):
+            body.append(line)
+        else:
+            body.append(f"<p>{_inline(line)}</p>")
+    if in_list:
+        body.append("</ul>")
+    return (
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,"
+        "initial-scale=1\"><title>Curator report</title>"
+        f"<style>{_CSS}</style></head><body>"
+        + "\n".join(body) + "</body></html>"
+    )

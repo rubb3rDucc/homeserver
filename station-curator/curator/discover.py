@@ -323,12 +323,19 @@ def ntfy_endpoint(url: str) -> str:
     return url
 
 
-def notify(ntfy_url: str, title: str, message: str):
-    """Best-effort push. A failed notification never fails a run."""
+def notify(ntfy_url: str, title: str, message: str, click: str = ""):
+    """
+    Best-effort push. A failed notification never fails a run.
+
+    `click` makes tapping the notification open the report in a browser.
+    """
     endpoint = ntfy_endpoint(ntfy_url)
     if not endpoint:
         return
+    headers = {"Title": title}
+    if click:
+        headers["Click"] = click
     try:
-        post_text(endpoint, message, headers={"Title": title})
+        post_text(endpoint, message, headers=headers)
     except HttpError as exc:
         log.warning("ntfy push failed: %s", exc)

@@ -221,6 +221,9 @@ class Env:
     report: Path
     interval: int
     suggest_per_cycle: int
+    ntfy_per_push: int
+    report_port: int
+    report_url: str
     dry_run: bool
     jellyfin_url: str
     jellyfin_key: str
@@ -258,6 +261,14 @@ def load_env() -> Env:
         # call, cached for a week, so 3 covers all 12 channels comfortably
         # while staying inside a free-tier daily quota.
         suggest_per_cycle=int(env("CURATOR_SUGGEST_PER_CYCLE", "3")),
+        # Titles per notification; the list is paginated across as many
+        # pushes as it takes rather than being truncated.
+        ntfy_per_push=int(env("CURATOR_NTFY_PER_PUSH", "8")),
+        # Serve the report over HTTP; 0 disables. The URL is what a phone
+        # notification opens when tapped, so it must be reachable from the
+        # phone -- a tailnet name, not a container name.
+        report_port=int(env("CURATOR_REPORT_PORT", "8477")),
+        report_url=env("CURATOR_REPORT_URL", ""),
         dry_run=_flag("CURATOR_DRY_RUN", False),
         jellyfin_url=env("JELLYFIN_URL", "http://jellyfin:8096").rstrip("/"),
         jellyfin_key=env("JELLYFIN_API_KEY", ""),
