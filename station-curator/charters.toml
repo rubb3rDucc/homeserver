@@ -284,7 +284,11 @@ name = "Superhero block"
 collection = "superhero shows without finales"
 kind = "episode"
 taste_gate = true
-brief = """Superhero animation, rerun-safe: no finales, no two-parters."""
+brief = """The animated superhero action canon -- Justice League, Batman: The
+Animated Series, X-Men. Straight capes-and-consequences action and drama.
+NOT comedies that merely use superheroes as characters: Teen Titans Go! and
+Harvey Birdman are gag shows with capes in them, and belong on a kids or
+comedy channel, not here."""
 target_size = 80
 min_size = 24
 max_churn = 10
@@ -295,6 +299,12 @@ keywords = ["superhero", "based on comic", "dc comics", "marvel comic"]
 # Genres alone match every action anime in the library, so demand a real
 # superhero signal before anything joins.
 any_keywords = ["superhero", "based on comic", "dc comics", "marvel comic"]
+# ...and a cape is not enough. Teen Titans Go! and Harvey Birdman are gag
+# shows that merely star superheroes. One rule separates them from the
+# whole action canon: the Comedy genre is on exactly those two and on none
+# of Justice League / Batman: TAS / X-Men '97 / Invincible / PLUTO / The
+# Big O. Deterministic, and it costs no taste call.
+exclude_genres = ["Comedy"]
 
 [channel.reruns]
 skip_finales = true
