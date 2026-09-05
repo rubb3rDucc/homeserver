@@ -301,6 +301,15 @@ def curate(channel, etv, ledger, library, episodes_by_show, episodes_by_id,
     if channel.taste_gate and shortlisted and llm.enabled:
         shortlisted = taste_filter(channel, llm, library, episodes_by_id,
                                    shortlisted)
+        # The gate can approve only one or two shows out of the shortlist,
+        # which would otherwise hand the channel eight episodes of the same
+        # series in a row. Re-interleave what survived.
+        if channel.kind == "episode":
+            by_show = {}
+            for mid in shortlisted:
+                ep = episodes_by_id.get(mid)
+                by_show.setdefault(ep.show_id if ep else mid, []).append(mid)
+            shortlisted = _interleave(by_show.values())
 
     joining = shortlisted[:room]
 
@@ -444,7 +453,7 @@ def cycle(env, channels):
                 f"{proposed} new suggestion(s), {total} outstanding.",
             )
         if llm.calls:
-            log.info("claude calls this cycle: %d", llm.calls)
+            log.info("%s calls this cycle: %d", llm.provider, llm.calls)
     finally:
         etv.close()
         ledger.close()

@@ -322,6 +322,10 @@ min_size = 6
 require_genres = ["Animation"]
 genres = ["Action", "Action & Adventure", "Sci-Fi & Fantasy", "Adventure"]
 keywords = ["anime", "based on manga"]
+# Without this gate the charter is just "action animation", which let
+# Justice League, Teen Titans Go! and Harvey Birdman into the anime block.
+# Every genuine anime in this library carries one of these tags.
+any_keywords = ["anime", "based on manga", "shounen", "seinen"]
 
 [channel.discover]
 tmdb_genres = [16, 10759]
