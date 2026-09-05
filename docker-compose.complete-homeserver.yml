@@ -476,6 +476,9 @@ services:
       # Titles per notification; the list is paginated across as many pushes
       # as it takes rather than truncated.
       - CURATOR_NTFY_PER_PUSH=${CURATOR_NTFY_PER_PUSH:-8}
+      # Channels asking for new-title ideas per cycle. Each is one LLM call,
+      # cached for a week. 3 suits a free key; raise it on a paid tier.
+      - CURATOR_SUGGEST_PER_CYCLE=${CURATOR_SUGGEST_PER_CYCLE:-3}
       # The report is served as a web page so it can be read without ssh.
       # CURATOR_REPORT_URL is what tapping a phone notification opens, so it
       # must be reachable from the phone -- use the tailnet name.
