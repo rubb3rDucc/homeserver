@@ -415,7 +415,7 @@ def shortlist(channel, env, library, ledger, llm, owned, playing, budget):
     verdicts = llm.vibe_filter(channel.collection, channel.brief or channel.name,
                                found) if channel.brief else {}
 
-    added = 0
+    added = []
     for cand in found:
         # Unjudged candidates are kept: the LLM narrows, it doesn't gatekeep.
         if verdicts.get(cand["id"]) is False:
@@ -427,8 +427,39 @@ def shortlist(channel, env, library, ledger, llm, owned, playing, budget):
         if ledger.propose(f"tmdb-{kind}", cand["id"], channel.collection,
                           cand["title"], cand["year"],
                           cand.get("rating") or 0.0, reason):
-            added += 1
+            added.append((channel.collection, cand["title"], cand["year"]))
     return added
+
+
+def _push_body(proposed, total, limit=12) -> str:
+    """
+    A phone notification is useless if it only says "10 new suggestions".
+
+    Groups the actual titles under their channel, newest first, and says how
+    many more are waiting in the report rather than silently truncating.
+    """
+    by_channel = {}
+    for collection, title, year in proposed:
+        by_channel.setdefault(collection, []).append(
+            f"{title} ({year})" if year else title)
+
+    lines, shown = [], 0
+    for collection, titles in by_channel.items():
+        lines.append(f"{collection}:")
+        for title in titles:
+            if shown >= limit:
+                break
+            lines.append(f"  \u2022 {title}")
+            shown += 1
+        if shown >= limit:
+            break
+
+    remaining = len(proposed) - shown
+    if remaining > 0:
+        lines.append(f"  ...and {remaining} more")
+    if total > len(proposed):
+        lines.append(f"\n{total} outstanding in report.md")
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- #
@@ -483,7 +514,7 @@ def cycle(env, channels):
                                           "show"),
         }
 
-        proposed = 0
+        proposed = []
         rows = []
         suggest_budget = [env.suggest_per_cycle]
         for channel in channels:
@@ -515,12 +546,10 @@ def cycle(env, channels):
         total = len(ledger.proposals())
         if proposed:
             log.info("%d new proposal(s); %d outstanding -> %s",
-                     proposed, total, env.report)
-            discover.notify(
-                env.ntfy_url,
-                "Curator: new titles to consider",
-                f"{proposed} new suggestion(s), {total} outstanding.",
-            )
+                     len(proposed), total, env.report)
+            discover.notify(env.ntfy_url,
+                            f"{len(proposed)} new title(s) to consider",
+                            _push_body(proposed, total))
         if llm.calls:
             log.info("%s calls this cycle: %d", llm.provider, llm.calls)
     finally:
