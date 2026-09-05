@@ -27,9 +27,15 @@ class HttpError(Exception):
 
     @property
     def transient(self) -> bool:
-        """Worth retrying: rate limits, overload, gateway errors, timeouts."""
-        return self.status is None or self.status in (408, 429) or \
-            self.status >= 500
+        """
+        Worth retrying: overload, gateway errors, timeouts.
+
+        429 is deliberately excluded. On Gemini it usually means a daily
+        free-tier quota, not a momentary spike, and retrying twice in six
+        seconds just spends the little that's left.
+        """
+        return self.status is None or self.status == 408 or \
+            (self.status is not None and self.status >= 500)
 
 
 def redact(url: str) -> str:

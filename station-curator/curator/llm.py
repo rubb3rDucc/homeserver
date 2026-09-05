@@ -34,6 +34,7 @@ from .net import HttpError, request
 log = logging.getLogger("curator.llm")
 
 BATCH = 40  # shows per request; 87 shows is 3 calls, once
+SUGGEST_TTL_DAYS = 7  # how often a channel is re-asked for new title ideas
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
@@ -357,9 +358,12 @@ class LLM:
         if not self.enabled:
             return []
 
-        fingerprint = str(abs(hash(tuple(sorted(playing)))) % 10**12)
-        key = f"suggest:{channel.collection}:{fingerprint}"
-        hit = self.ledger.cache_get(key)
+        # Keyed on the channel and re-asked at most every SUGGEST_TTL_DAYS.
+        # Keying on the line-up instead meant any membership change re-asked,
+        # which on a free-tier key exhausts the daily quota in a few cycles --
+        # and a shortlist of films to go and find simply isn't 6-hourly news.
+        key = f"suggest:{channel.collection}"
+        hit = self.ledger.cache_get(key, max_age_days=SUGGEST_TTL_DAYS)
         if hit is not None:
             return json.loads(hit)
 

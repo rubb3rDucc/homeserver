@@ -382,18 +382,27 @@ def curate(channel, etv, ledger, library, episodes_by_show, episodes_by_id,
 # --------------------------------------------------------------------------- #
 # Acquisition shortlist
 # --------------------------------------------------------------------------- #
-def shortlist(channel, env, library, ledger, llm, owned, playing):
+def shortlist(channel, env, library, ledger, llm, owned, playing, budget):
+    """
+    Suggest titles to acquire. `budget` is a mutable [n] of remaining LLM
+    suggestion calls this cycle -- a free-tier key has a daily quota, and
+    twelve channels asking every six hours exhausts it.
+    """
     if not channel.discover.enabled:
         return 0
     kind = "movie" if channel.kind == "movie" else "show"
     seen = ledger.already_proposed(f"tmdb-{kind}", channel.collection)
 
     if channel.discover.source == "llm":
-        if not llm.enabled:
+        if not llm.enabled or budget[0] <= 0:
             return 0
+        before = llm.calls
         found = [c for c in discover.suggested_for(
             channel, env, llm, library, playing, owned[kind])
             if c["id"] not in seen]
+        # Only a cache miss costs a call; a cached answer is free.
+        if llm.calls > before:
+            budget[0] -= 1
     else:
         if not env.tmdb_key:
             return 0
@@ -476,6 +485,7 @@ def cycle(env, channels):
 
         proposed = 0
         rows = []
+        suggest_budget = [env.suggest_per_cycle]
         for channel in channels:
             row = curate(channel, etv, ledger, library, episodes_by_show,
                          episodes_by_id, verdicts, watch, jellyfin_ids,
@@ -483,7 +493,8 @@ def cycle(env, channels):
             if row:
                 rows.append(row)
             proposed += shortlist(channel, env, library, ledger, llm, owned,
-                                  row["playing"] if row else [])
+                                  row["playing"] if row else [],
+                                  suggest_budget)
 
         sources = {c.discover.source for c in channels if c.discover.enabled}
         if "llm" in sources and not llm.enabled:

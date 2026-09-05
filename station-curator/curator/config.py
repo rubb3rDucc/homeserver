@@ -220,6 +220,7 @@ class Env:
     proposals: Path
     report: Path
     interval: int
+    suggest_per_cycle: int
     dry_run: bool
     jellyfin_url: str
     jellyfin_key: str
@@ -253,6 +254,10 @@ def load_env() -> Env:
         proposals=Path(env("CURATOR_PROPOSALS", "/state/proposals.md")),
         report=Path(env("CURATOR_REPORT", "/state/report.md")),
         interval=int(env("CURATOR_INTERVAL", "21600")),   # 6h
+        # Channels asking for new-title ideas per cycle. Each is one LLM
+        # call, cached for a week, so 3 covers all 12 channels comfortably
+        # while staying inside a free-tier daily quota.
+        suggest_per_cycle=int(env("CURATOR_SUGGEST_PER_CYCLE", "3")),
         dry_run=_flag("CURATOR_DRY_RUN", False),
         jellyfin_url=env("JELLYFIN_URL", "http://jellyfin:8096").rstrip("/"),
         jellyfin_key=env("JELLYFIN_API_KEY", ""),

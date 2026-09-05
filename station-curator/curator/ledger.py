@@ -241,11 +241,27 @@ class Ledger:
         }
 
     # ---- cache ------------------------------------------------------------ #
-    def cache_get(self, key: str) -> str | None:
+    def cache_get(self, key: str, max_age_days: float | None = None):
+        """
+        Read a cached answer.
+
+        `max_age_days` expires it -- used for suggestions, which are worth
+        re-asking occasionally but certainly not every cycle. Judgements about
+        a specific title (serialised? fits?) never expire.
+        """
         row = self.db.execute(
-            "SELECT value FROM cache WHERE key = ?", (key,)
+            "SELECT value, created_at FROM cache WHERE key = ?", (key,)
         ).fetchone()
-        return row["value"] if row else None
+        if row is None:
+            return None
+        if max_age_days is not None:
+            try:
+                made = datetime.fromisoformat(row["created_at"])
+            except ValueError:
+                return None
+            if (utcnow() - made).total_seconds() > max_age_days * 86400:
+                return None
+        return row["value"]
 
     def cache_set(self, key: str, value: str):
         self.db.execute(
