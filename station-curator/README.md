@@ -276,6 +276,15 @@ touching ErsatzTV.
 
 ## Safety notes
 
+- **Unplayable content is swept, not curated.** Deleting a file doesn't remove
+  it from a collection — ErsatzTV marks the item `FileNotFound` and leaves the
+  membership alone, so it keeps a slot and can still be scheduled, which is
+  dead air. The same goes for a series the library lists but holds no episodes
+  of (an empty season folder Jellyfin matched anyway, like *Living Single*):
+  the Show itself looks healthy, but it expands to nothing at playout. Both are
+  removed from any managed collection, ignored as candidates, and — since they
+  aren't really owned — proposable again. Empty series are listed in the report
+  so you can fetch the episodes or delete the folder.
 - **Writes are confined to `CollectionItem`.** Collections are a two-column
   join table; scheduling tables are stateful and version-specific, so they're
   left alone.

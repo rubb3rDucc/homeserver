@@ -318,13 +318,14 @@ def curate(channel, etv, ledger, library, episodes_by_show, episodes_by_id,
 
     members = etv.collection_items(collection_id)
 
-    # Sweep out anything ErsatzTV can no longer play. This is not curation --
-    # a missing file can't air, and leaving it in silently costs a slot.
+    # Sweep out anything ErsatzTV can't actually play -- a missing file, or a
+    # show with no episodes under it. This is not curation: neither can air,
+    # and leaving them in silently costs a slot.
     ghosts = members & gone
     if ghosts:
         etv.remove_items(collection_id, ghosts)
         members -= ghosts
-        log.warning("ch%s: removed %d item(s) whose files are gone",
+        log.warning("ch%s: removed %d unplayable item(s)",
                     channel.number, len(ghosts))
 
     ledger.sync_rotation(channel.collection, members)
@@ -656,6 +657,24 @@ def cycle(env, channels):
         for eps in episodes_by_show.values():
             eps.sort(key=lambda e: (e.season, e.number or 0))
 
+        # A show can exist with nothing under it: Jellyfin matches a series
+        # folder whose season dirs are empty (Living Single), or every episode
+        # file is gone while the series entry survives. ErsatzTV keeps the Show
+        # itself in Normal state either way, so the sweep above can't see it --
+        # but it expands to no episodes at playout, so it occupies a slot on a
+        # `show` channel and airs nothing. Treat it as unplayable too, which
+        # also frees it to be proposed for acquisition again.
+        hollow = {
+            media_id for media_id, item in library.items()
+            if item.kind == "show" and not episodes_by_show.get(media_id)
+        }
+        empty_shows = sorted(library[m].label() for m in hollow)
+        if hollow:
+            log.warning("library: %d show(s) with no episodes -- %s",
+                        len(hollow), ", ".join(empty_shows))
+            gone |= hollow
+            library = {k: v for k, v in library.items() if k not in hollow}
+
         # Anything you acted on since last cycle: drop the suggestion. The
         # title itself is picked up by ordinary charter scoring below.
         for got in discover.retire_acquired(ledger, library):
@@ -713,7 +732,8 @@ def cycle(env, channels):
                     "source._")
         else:
             note = "_Nothing outstanding._"
-        report.write(env.report, rows, ledger.proposals(), note)
+        report.write(env.report, rows, ledger.proposals(), note,
+                     empty_shows=empty_shows)
         log.info("report -> %s", env.report)
 
         total = len(ledger.proposals())

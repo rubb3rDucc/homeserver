@@ -19,12 +19,13 @@ in ErsatzTV's own schedule, so repeating them here was noise.
 from datetime import datetime, timezone
 
 
-def write(path, channels, proposals, provider_note=""):
+def write(path, channels, proposals, provider_note="", empty_shows=()):
     """
     Render the full report.
 
     `channels` is a list of dicts from the curation pass; `proposals` are
-    ledger rows for titles not in the library yet.
+    ledger rows for titles not in the library yet; `empty_shows` are series
+    the library lists but holds no episodes of.
     """
     now = datetime.now(timezone.utc).replace(microsecond=0)
     out = [
@@ -63,6 +64,19 @@ def write(path, channels, proposals, provider_note=""):
             out.append("")
     else:
         out += [provider_note or "_Nothing outstanding._", ""]
+
+    # Shells: the library says you have the show, but there is nothing under
+    # it to play. Only you can settle which it is -- fetch the episodes, or
+    # delete the folder -- so it belongs in the report rather than the log.
+    if empty_shows:
+        out += [
+            "## In the library, but empty", "",
+            "These series exist in Jellyfin with no episode files behind "
+            "them, so they can't air. The curator keeps them off the "
+            "channels; get the episodes or remove the folder.", "",
+        ]
+        out += [f"- {title}" for title in empty_shows]
+        out.append("")
 
     path.parent.mkdir(parents=True, exist_ok=True)
     markdown = "\n".join(out) + "\n"
