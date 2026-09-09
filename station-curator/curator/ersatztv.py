@@ -169,6 +169,28 @@ class ErsatzTV:
                     out[row["media_id"]] = row["ItemId"]
         return out
 
+    # ErsatzTV's MediaItemState: 0 Normal, 1 FileNotFound, 2 Unavailable,
+    # 3 RemoteOnly. This library is Jellyfin-sourced, so 3 is the normal case
+    # for most of it -- only 1 and 2 mean "cannot be played".
+    UNPLAYABLE_STATES = (1, 2)
+
+    def unplayable(self) -> set[int]:
+        """
+        Media ids ErsatzTV can no longer play -- deleted or moved files.
+
+        Deleting content doesn't remove it from a collection: ErsatzTV marks
+        the item FileNotFound and leaves the CollectionItem alone, so the
+        entry lingers, occupies a slot against target_size, and can even get
+        scheduled -- which is dead air.
+        """
+        placeholders = ",".join("?" * len(self.UNPLAYABLE_STATES))
+        return {
+            row["Id"] for row in self.db.execute(
+                f"SELECT Id FROM MediaItem WHERE State IN ({placeholders})",
+                self.UNPLAYABLE_STATES,
+            )
+        }
+
     # ---- collections ------------------------------------------------------ #
     def collections(self) -> dict[str, int]:
         """Collection name -> id. Names are unique (ErsatzTV enforces it)."""

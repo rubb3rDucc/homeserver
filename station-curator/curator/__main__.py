@@ -309,7 +309,7 @@ def detect_kind(members, library, episodes_by_id) -> str:
 # One channel
 # --------------------------------------------------------------------------- #
 def curate(channel, etv, ledger, library, episodes_by_show, episodes_by_id,
-           verdicts, watch, jellyfin_ids, collections, llm, serials):
+           verdicts, watch, jellyfin_ids, collections, llm, serials, gone):
     collection_id = collections.get(channel.collection)
     if collection_id is None:
         log.warning("ch%s: no ErsatzTV collection named %r -- skipped",
@@ -317,6 +317,16 @@ def curate(channel, etv, ledger, library, episodes_by_show, episodes_by_id,
         return None
 
     members = etv.collection_items(collection_id)
+
+    # Sweep out anything ErsatzTV can no longer play. This is not curation --
+    # a missing file can't air, and leaving it in silently costs a slot.
+    ghosts = members & gone
+    if ghosts:
+        etv.remove_items(collection_id, ghosts)
+        members -= ghosts
+        log.warning("ch%s: removed %d item(s) whose files are gone",
+                    channel.number, len(ghosts))
+
     ledger.sync_rotation(channel.collection, members)
 
     if channel.kind == "auto":
@@ -634,6 +644,11 @@ def cycle(env, channels):
 
         library = etv.library()
         episodes = etv.episodes()
+        # Deleted/moved content: never a candidate, and swept out of any
+        # collection it is still sitting in.
+        gone = etv.unplayable()
+        library = {k: v for k, v in library.items() if k not in gone}
+        episodes = [e for e in episodes if e.media_id not in gone]
         episodes_by_id = {ep.media_id: ep for ep in episodes}
         episodes_by_show = defaultdict(list)
         for ep in episodes:
@@ -678,7 +693,7 @@ def cycle(env, channels):
         for channel in channels:
             row = curate(channel, etv, ledger, library, episodes_by_show,
                          episodes_by_id, verdicts, watch, jellyfin_ids,
-                         collections, llm, serials)
+                         collections, llm, serials, gone)
             if row:
                 rows.append(row)
             proposed += shortlist(channel, env, library, ledger, llm, owned,
