@@ -209,6 +209,27 @@ class ErsatzTV:
         return self.db.total_changes - before
 
     # ---- programmed order ------------------------------------------------- #
+    def expands_at_playout(self, collection_id: int) -> int:
+        """
+        Count collection entries that are a Show or Season rather than a
+        directly playable item.
+
+        This matters because ErsatzTV's CustomOrderCollectionEnumerator maps
+        collection items to resolved media items one-for-one. A Show entry
+        expands into its episodes at build time, the expansion has no
+        CollectionItem of its own, and the enumerator throws
+        "Sequence contains no matching element" -- taking the whole channel's
+        playout down. So a mixed collection cannot carry a custom order.
+        """
+        row = self.db.execute(
+            "SELECT COUNT(*) AS n FROM CollectionItem ci "
+            "WHERE ci.CollectionId = ? AND ("
+            "  ci.MediaItemId IN (SELECT Id FROM Show) OR"
+            "  ci.MediaItemId IN (SELECT Id FROM Season))",
+            (collection_id,),
+        ).fetchone()
+        return row["n"] if row else 0
+
     def set_custom_order(self, collection_id: int, ordered_ids) -> bool:
         """
         Write an explicit playback sequence as CollectionItem.CustomIndex.

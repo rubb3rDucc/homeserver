@@ -366,10 +366,29 @@ def curate(channel, etv, ledger, library, episodes_by_show, episodes_by_id,
             etv.clear_custom_order(collection_id)
             log.info("ch%s: handed ordering back to ErsatzTV", channel.number)
     else:
-        ordered = program.arrange(
-            channel, final, library=library, episodes_by_id=episodes_by_id,
-            airings=ledger.airing_counts(channel.freshness.airing_window_days),
-        )
+        # A collection holding whole shows can't carry a custom order --
+        # ErsatzTV expands them at build time and the ordering enumerator
+        # then fails, killing the channel's playout entirely.
+        expanding = etv.expands_at_playout(collection_id)
+        if expanding and channel.programming.order in program.CURATED:
+            log.warning(
+                "ch%s: %d entr(ies) in %r are whole shows, which ErsatzTV "
+                "expands at playout -- a custom order would break the build, "
+                "so leaving ErsatzTV's playback order. Make the collection "
+                "episodes-only to program it.",
+                channel.number, expanding, channel.collection)
+            if etv.uses_custom_order(collection_id):
+                etv.clear_custom_order(collection_id)
+                log.warning("ch%s: cleared the custom order that was set",
+                            channel.number)
+            ordered = None
+        else:
+            ordered = program.arrange(
+                channel, final, library=library,
+                episodes_by_id=episodes_by_id,
+                airings=ledger.airing_counts(
+                    channel.freshness.airing_window_days),
+            )
         if ordered:
             wrote = etv.set_custom_order(collection_id, ordered)
             log.info("ch%s: %s %s", channel.number,
