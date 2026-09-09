@@ -170,7 +170,9 @@ target_size = 30
 require_genres = ["Animation"]
 genres = ["Comedy"]
 keywords = ["adult animation", "satire", "hilarious"]
-exclude_genres = ["Family"]
+# Rocko's Modern Life is a Nicktoon; the rating gate already rejects it,
+# and Kids makes that explicit rather than incidental.
+exclude_genres = ["Family", "Kids"]
 ratings = ["TV-MA", "TV-14", "R"]
 
 [channel.reruns]
@@ -247,6 +249,10 @@ min_size = 5
 
 [channel.charter]
 genres = ["Family", "Animation", "Comedy"]
+# Animation+Comedy alone is not a kids show -- that also describes Home
+# Movies, which is late-night Adult Swim. Every genuine kids show here
+# carries Family or Kids; Home Movies carries neither.
+any_genres = ["Family", "Kids"]
 exclude_genres = ["Horror", "Crime", "Thriller"]
 exclude_keywords = ["adult animation", "anime"]
 # Without this, scoring cheerfully offers Aqua Teen Hunger Force and
