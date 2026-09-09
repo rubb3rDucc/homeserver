@@ -34,6 +34,7 @@ class Item:
     genres: frozenset        # lowercased
     tags: frozenset          # lowercased TMDB keywords
     rating: str = ""         # ContentRating: R, PG-13, TV-MA, TV-Y7, ...
+    added: str = ""          # DateAdded -- how "recently acquired" is known
 
     def label(self) -> str:
         return f"{self.title} ({self.year})" if self.year else self.title
@@ -46,6 +47,7 @@ class Episode:
     season: int
     number: int | None
     title: str
+    added: str = ""
 
 
 def _parse_dt(raw: str) -> datetime | None:
@@ -99,7 +101,7 @@ class ErsatzTV:
         movie_tags = self._facets("Tag", "MovieMetadata", "md.MovieId")
         for row in self.db.execute(
             "SELECT m.Id AS media_id, mm.Title AS title, mm.Year AS year, "
-            "       mm.ContentRating AS rating "
+            "       mm.ContentRating AS rating, mm.DateAdded AS added "
             "FROM Movie m JOIN MovieMetadata mm ON mm.MovieId = m.Id"
         ):
             mid = row["media_id"]
@@ -111,13 +113,14 @@ class ErsatzTV:
                 genres=frozenset(movie_genres.get(mid, ())),
                 tags=frozenset(movie_tags.get(mid, ())),
                 rating=(row["rating"] or "").strip().upper(),
+                added=(row["added"] or ""),
             )
 
         show_genres = self._facets("Genre", "ShowMetadata", "md.ShowId")
         show_tags = self._facets("Tag", "ShowMetadata", "md.ShowId")
         for row in self.db.execute(
             "SELECT s.Id AS media_id, sm.Title AS title, sm.Year AS year, "
-            "       sm.ContentRating AS rating "
+            "       sm.ContentRating AS rating, sm.DateAdded AS added "
             "FROM Show s JOIN ShowMetadata sm ON sm.ShowId = s.Id"
         ):
             mid = row["media_id"]
@@ -129,6 +132,7 @@ class ErsatzTV:
                 genres=frozenset(show_genres.get(mid, ())),
                 tags=frozenset(show_tags.get(mid, ())),
                 rating=(row["rating"] or "").strip().upper(),
+                added=(row["added"] or ""),
             )
         return items
 
@@ -141,11 +145,12 @@ class ErsatzTV:
                 season=row["season"] if row["season"] is not None else 0,
                 number=row["number"],
                 title=(row["title"] or "").strip(),
+                added=(row["added"] or ""),
             )
             for row in self.db.execute(
                 "SELECT e.Id AS media_id, s.ShowId AS show_id, "
                 "       s.SeasonNumber AS season, em.EpisodeNumber AS number, "
-                "       em.Title AS title "
+                "       em.Title AS title, em.DateAdded AS added "
                 "FROM Episode e "
                 "JOIN Season s ON s.Id = e.SeasonId "
                 "JOIN EpisodeMetadata em ON em.EpisodeId = e.Id"

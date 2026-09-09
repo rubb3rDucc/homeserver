@@ -74,6 +74,25 @@ class Charter:
 
 
 @dataclass(frozen=True)
+class Intake:
+    """
+    How newly-acquired library content gets on air.
+
+    Without this, a collection at target_size accepts nothing new until an
+    incumbent goes stale on its own -- so a film you just downloaded could
+    sit unaired for weeks on a full channel. Intake lets a genuinely new
+    arrival displace the stalest incumbent, bounded so a channel still
+    can't lurch.
+    """
+    new_within_days: int = 45   # library items added this recently are "new"
+    max_displacements: int = 2  # per channel per cycle; 0 disables intake
+    # A displaced title wasn't stale -- it just lost its seat to something
+    # new -- so it gets a much shorter bench than freshness.cooldown_days,
+    # and comes back into contention sooner.
+    displaced_cooldown_days: int = 14
+
+
+@dataclass(frozen=True)
 class Programming:
     """
     How the collection is ordered.
@@ -131,6 +150,7 @@ class ChannelCfg:
     weights: Weights = Weights()
     reruns: Reruns = Reruns()
     programming: Programming = Programming()
+    intake: Intake = Intake()
     discover: Discover = Discover()
 
 
@@ -143,6 +163,7 @@ _NESTED = {
     "weights": Weights,
     "reruns": Reruns,
     "programming": Programming,
+    "intake": Intake,
     "discover": Discover,
 }
 

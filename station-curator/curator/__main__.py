@@ -31,6 +31,7 @@ import sys
 import time
 from collections import defaultdict
 from dataclasses import replace
+from datetime import datetime, timezone
 
 from . import discover, program, report, reruns, score
 from .config import load_channels, load_env
@@ -165,6 +166,40 @@ def dedupe_key(media_id, library, episodes_by_id) -> str:
     if item is None:
         return f"#{media_id}"
     return f"{item.title.strip().lower()}|{item.year or ''}"
+
+
+def is_new(media_id, library, episodes_by_id, within_days) -> bool:
+    """Was this acquired recently enough to deserve a slot on a full channel?"""
+    if within_days <= 0:
+        return False
+    added = ""
+    if media_id in episodes_by_id:
+        added = episodes_by_id[media_id].added
+    elif media_id in library:
+        added = library[media_id].added
+    if not added:
+        return False
+    try:
+        when = datetime.fromisoformat(added.strip().replace(" ", "T")[:26])
+    except ValueError:
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (utcnow() - when).total_seconds() <= within_days * 86400
+
+
+def staleness_rank(members, ledger, channel):
+    """
+    Order incumbents worst-first, whether or not they meet a retirement rule.
+
+    Retirement asks "has this earned a rest?". Intake asks a different
+    question -- "if something must go to make room, which?" -- so it needs a
+    ranking over everything, not just the ones over threshold.
+    """
+    airings = ledger.airing_counts(channel.freshness.airing_window_days)
+    ages = ledger.days_in_rotation(channel.collection)
+    return sorted(members,
+                  key=lambda m: (-airings.get(m, 0), -ages.get(m, 0.0)))
 
 
 def candidate_pool(channel, library, episodes_by_show, verdicts, serials):
@@ -359,6 +394,40 @@ def curate(channel, etv, ledger, library, episodes_by_show, episodes_by_id,
         item = library.get(media_id)
         return item.label() if item else f"#{media_id}"
 
+    # ---- intake: let genuinely new arrivals onto a full channel ---------- #
+    displaced = []
+    spare = channel.max_churn - len(leaving) - len(joining)
+    if (channel.intake.max_displacements > 0 and spare > 0
+            and len(members) + len(joining) >= channel.target_size):
+        # Dedupe against what is actually in the collection, not `taken` --
+        # that set also holds everything the eligible scan merely *looked at*,
+        # which would hide every new arrival that scoring had already ranked.
+        held = {dedupe_key(m, library, episodes_by_id)
+                for m in list(members) + joining}
+        arrivals = [
+            mid for mid in pool
+            if mid not in members and mid not in joining
+            and mid not in benched
+            and is_new(mid, library, episodes_by_id,
+                       channel.intake.new_within_days)
+            and dedupe_key(mid, library, episodes_by_id) not in held
+        ]
+        room = min(len(arrivals), channel.intake.max_displacements, spare,
+                   max(0, len(members) - channel.min_size))
+        if room:
+            for old, new in zip(staleness_rank(members, ledger, channel),
+                                arrivals[:room]):
+                ledger.bench(channel.collection, old,
+                             channel.intake.displaced_cooldown_days,
+                             "made room for new arrival")
+                displaced.append(old)
+                joining.append(new)
+                taken.add(dedupe_key(new, library, episodes_by_id))
+            etv.remove_items(collection_id, displaced)
+            etv.add_items(collection_id, joining[-room:])
+            ledger.note_added(channel.collection, joining[-room:])
+            members -= set(displaced)
+
     # ---- program the order ------------------------------------------------ #
     final = (members | set(joining))
     if channel.programming.order == program.HANDBACK:
@@ -401,7 +470,13 @@ def curate(channel, etv, ledger, library, episodes_by_show, episodes_by_id,
     for media_id, reason in leaving:
         log.info("    retired  %s  [%s]", label(media_id), reason)
     for media_id in joining:
-        log.info("    added    %s", label(media_id))
+        log.info("    added    %s%s", label(media_id),
+                 "  [new arrival]" if is_new(
+                     media_id, library, episodes_by_id,
+                     channel.intake.new_within_days) else "")
+    for media_id in displaced:
+        log.info("    displaced %s  [to make room for new content]",
+                 label(media_id))
 
     resting = ledger.benched(channel.collection)
     return {
