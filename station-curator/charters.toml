@@ -228,9 +228,11 @@ skip_multipart = true
 skip_serialized = false  # much of Toonami is serialized; finales are the real hazard
 
 [channel.programming]
-# Two in-order episodes of a show, then move on -- the Toonami feel.
-order = "doubles"
-batch = 2
+# ErsatzTV does this natively now: the schedule item is set to Marathon,
+# grouped by Show, batch 2 -- which works with the whole-show entries in
+# this collection, where the curator's own `doubles` could not. Leave its
+# playback order alone.
+order = "none"
 
 [channel.discover]
 tmdb_genres = [16, 10759]
