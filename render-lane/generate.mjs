@@ -10,13 +10,15 @@
  * ErsatzTV then plays these as filler / pre-roll.
  */
 import { bundle } from "@remotion/bundler";
-import { selectComposition, renderMedia } from "@remotion/renderer";
+import { selectComposition, renderMedia, openBrowser } from "@remotion/renderer";
 import { XMLParser } from "fast-xml-parser";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs/promises";
 import http from "node:http";
 import { createReadStream } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 const ERSATZTV_URL = process.env.ERSATZTV_URL || "http://ersatztv:8409";
 const asList = (v) =>
@@ -30,6 +32,40 @@ const ACCENT = process.env.ACCENT || "#e50914";
 // (Remotion otherwise defaults to ~all cores). ErsatzTV needs the rest for
 // live transcoding.
 const CONCURRENCY = parseInt(process.env.RENDER_CONCURRENCY || "2", 10);
+
+// Chromium's GL backend. Remotion's default is null, which emits no --use-gl
+// flag at all -> headless Chrome falls back to SwiftShader and rasterizes every
+// gradient, shadow and filter on the CPU. "angle-egl" uses the real GPU *and*
+// switches on VaapiVideoDecoder, which is what decodes the b-roll clips. Needs
+// /dev/dri passed into the container; set RENDER_GL=swangle to force software
+// again if the GPU is missing or the driver misbehaves.
+const RENDER_GL = process.env.RENDER_GL || "angle-egl";
+const CHROMIUM_OPTIONS = { gl: RENDER_GL === "default" ? null : RENDER_GL };
+
+// OffthreadVideo pulls one b-roll frame per rendered frame via a separate seek;
+// a larger cache means far fewer repeat seeks into the same clip. Bytes.
+const OFFTHREAD_CACHE = parseInt(
+  process.env.OFFTHREAD_CACHE_BYTES || String(512 * 1024 * 1024),
+  10
+);
+
+// These are 15-second filler clips that ErsatzTV re-transcodes on the way out,
+// so trading a little encoder efficiency for speed is free in practice.
+const X264_PRESET = process.env.X264_PRESET || "veryfast";
+
+// Cards play between programming that is NOT loudness-normalized — ErsatzTV's
+// NormalizeLoudnessMode is deliberately Off so films keep their dynamic range —
+// so each card has to arrive at the right level on its own. Left alone, a card
+// lands wherever its rotating music bed sits, which measured 6-10 LU hotter
+// than the shows on either side of it. Target is measured from the library
+// (see README), not a broadcast spec.
+const LOUDNORM_I = process.env.LOUDNORM_I || "-27";
+const LOUDNORM_TP = process.env.LOUDNORM_TP || "-1.5";
+const LOUDNORM_LRA = process.env.LOUDNORM_LRA || "11";
+// Below this measured level the card is treated as silent and left alone. The
+// Ident is silent by design, and "normalizing" digital silence would just
+// amplify the noise floor.
+const LOUDNORM_FLOOR = parseFloat(process.env.LOUDNORM_FLOOR || "-60");
 
 // Optional CN City assets for the junction card. Any URL Remotion can fetch, or
 // a staticFile() path under public/. Empty -> the card uses its CSS fallback.
@@ -128,16 +164,25 @@ function fmtRuntime(min) {
   return h ? (m ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
 }
 
-async function getSchedule(channel) {
+// The guide is a single document covering every channel, but getSchedule() is
+// called once per channel — so a 5-channel cycle was fetching and re-parsing the
+// same XML five times. Fetch and parse once per cycle; renderCards() clears it.
+let guideCache = null;
+async function fetchGuide() {
+  if (guideCache) return guideCache;
   const res = await fetch(`${ERSATZTV_URL}/iptv/xmltv.xml`);
   if (!res.ok) throw new Error(`XMLTV fetch failed: HTTP ${res.status}`);
   const xml = await res.text();
-
   const parser = new XMLParser({
     ignoreAttributes: false,
     attributeNamePrefix: "@_",
   });
-  const tv = parser.parse(xml).tv || {};
+  guideCache = parser.parse(xml).tv || {};
+  return guideCache;
+}
+
+async function getSchedule(channel) {
+  const tv = await fetchGuide();
 
   const channels = arr(tv.channel);
   const match = channels.find((c) => {
@@ -298,19 +343,158 @@ async function getServeUrl() {
   return serveUrl;
 }
 
+// One browser for the whole process. renderMedia() otherwise launches (and
+// tears down) Chromium per call, which on a 5-card cycle meant 5 cold starts an
+// hour for no reason.
+let browserInstance = null;
+async function getBrowser() {
+  if (!browserInstance) {
+    browserInstance = await openBrowser("chrome", {
+      chromiumOptions: CHROMIUM_OPTIONS,
+    });
+    console.log(`chromium up (gl=${RENDER_GL})`);
+  }
+  return browserInstance;
+}
+
+const execFileAsync = promisify(execFile);
+// loudnorm's JSON is NOT the last thing on stderr — ffmpeg prints the
+// "[out#0/null ...]" and "frame=" summary after it — so this can't be anchored
+// to the end of the output. Scan for the last flat {...} that actually parses.
+const LOUDNORM_JSON_RE = /\{[^{}]*\}/g;
+
+function parseLoudnorm(stderr) {
+  const blobs = stderr.match(LOUDNORM_JSON_RE) || [];
+  for (let i = blobs.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(blobs[i]);
+      if ("input_i" in parsed) return parsed;
+    } catch {
+      // not the block we're after — keep scanning backwards
+    }
+  }
+  return null;
+}
+
+// ffmpeg reports on stderr and still exits 0; execFile only rejects on a
+// non-zero exit, so hand stderr back to the caller rather than treating it
+// as failure.
+async function ffmpeg(args) {
+  const { stderr } = await execFileAsync("ffmpeg", args, {
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  return stderr;
+}
+
+/**
+ * Two-pass loudnorm: pass 1 measures, pass 2 applies an exact linear gain.
+ * Single-pass loudnorm is an adaptive filter that estimates as it goes — it
+ * overshoots its own target and compresses on the way, which is exactly the
+ * "why is the bumper still louder" trap. Video is stream-copied, so this costs
+ * an audio re-encode (~1s), not a re-render.
+ *
+ * Returns true if outPath was written; false means the caller should ship
+ * inPath unchanged. A loudness problem must never cost us the card.
+ */
+async function normalizeLoudness(inPath, outPath) {
+  const base = `loudnorm=I=${LOUDNORM_I}:TP=${LOUDNORM_TP}:LRA=${LOUDNORM_LRA}`;
+
+  let measured = null;
+  try {
+    const stderr = await ffmpeg([
+      "-hide_banner", "-nostats", "-i", inPath,
+      "-af", `${base}:print_format=json`, "-f", "null", "-",
+    ]);
+    measured = parseLoudnorm(stderr);
+  } catch (err) {
+    console.warn(`  loudness: measure failed (${err.message}) — audio as-is`);
+    return false;
+  }
+  if (!measured) {
+    console.warn("  loudness: no measurement in ffmpeg output — audio as-is");
+    return false;
+  }
+
+  // parseFloat("-inf") is -Infinity, so digital silence lands here too.
+  const inputI = parseFloat(measured.input_i);
+  if (!Number.isFinite(inputI) || inputI < LOUDNORM_FLOOR) {
+    console.log(`  loudness: silent (${measured.input_i} LUFS) — audio untouched`);
+    return false;
+  }
+
+  const filter =
+    `${base}:measured_I=${measured.input_i}:measured_TP=${measured.input_tp}` +
+    `:measured_LRA=${measured.input_lra}:measured_thresh=${measured.input_thresh}` +
+    `:offset=${measured.target_offset}:linear=true`;
+
+  try {
+    await ffmpeg([
+      "-y", "-hide_banner", "-nostats", "-loglevel", "error",
+      "-i", inPath, "-af", filter,
+      "-c:v", "copy",
+      "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+      "-movflags", "+faststart", outPath,
+    ]);
+  } catch (err) {
+    console.warn(`  loudness: apply failed (${err.message}) — audio as-is`);
+    return false;
+  }
+
+  console.log(`  loudness: ${inputI.toFixed(1)} -> ${LOUDNORM_I} LUFS`);
+  return true;
+}
+
 async function renderComp(url, id, inputProps, outPath) {
-  const composition = await selectComposition({ serveUrl: url, id, inputProps });
+  const puppeteerInstance = await getBrowser();
+  const t0 = Date.now();
+
+  const composition = await selectComposition({
+    serveUrl: url,
+    id,
+    inputProps,
+    puppeteerInstance,
+    chromiumOptions: CHROMIUM_OPTIONS,
+  });
+  const tSelect = Date.now();
+
   await fs.mkdir(path.dirname(outPath), { recursive: true });
-  const tmp = `${outPath}.tmp.mp4`; // same dir -> atomic rename, never serve a half file
+  // Both staging files sit in the output dir so the final step is an atomic
+  // rename and ErsatzTV never indexes a half-written card.
+  const raw = `${outPath}.raw.mp4`; // Remotion's output, pre-loudness
+  const tmp = `${outPath}.tmp.mp4`; // loudness-corrected, ready to publish
   await renderMedia({
     composition,
     serveUrl: url,
     codec: "h264",
-    outputLocation: tmp,
+    outputLocation: raw,
     inputProps,
     concurrency: CONCURRENCY,
+    puppeteerInstance,
+    chromiumOptions: CHROMIUM_OPTIONS,
+    offthreadVideoCacheSizeInBytes: OFFTHREAD_CACHE,
+    x264Preset: X264_PRESET,
   });
-  await fs.rename(tmp, outPath);
+  const tRender = Date.now();
+
+  let tLoud;
+  try {
+    // false = silent card, or ffmpeg failed; ship the render as-is either way.
+    // A loudness problem must never cost us the card.
+    const normalized = await normalizeLoudness(raw, tmp);
+    tLoud = Date.now();
+    await fs.rename(normalized ? tmp : raw, outPath);
+  } finally {
+    // Never leave a staging file behind. ErsatzTV indexes this folder, so an
+    // orphaned .raw.mp4 would be picked up as an extra filler spot — and an
+    // un-normalized one at that, reintroducing the exact problem this fixes.
+    await fs.rm(raw, { force: true });
+    await fs.rm(tmp, { force: true });
+  }
+  console.log(
+    `  timing ${id}: select=${tSelect - t0}ms render=${tRender - tSelect}ms ` +
+      `loudness=${tLoud - tRender}ms total=${tLoud - t0}ms ` +
+      `(gl=${RENDER_GL} preset=${X264_PRESET} conc=${CONCURRENCY})`
+  );
 }
 
 // Skip a re-render when the card's content is identical to what's already on
@@ -330,6 +514,7 @@ async function unchanged(outPath, sig) {
 
 async function renderCards() {
   const url = await getServeUrl();
+  guideCache = null; // one guide fetch+parse per cycle, shared by every channel
 
   // now / next / later — one junction per channel, output now-next-later-<ch>.mp4
   for (const ch of CHANNELS) {

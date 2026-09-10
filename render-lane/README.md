@@ -29,6 +29,35 @@ already carries `<rating>` and `<date>` for films — no extra API/key needed.
 | `ACCENT` | `#e50914` | Brand accent color (all cards) |
 | `IDENT_NAME` | `My Channel` | Wordmark in the ident |
 | `IDENT_TAGLINE` | (blank) | Optional tagline under the ident |
+| `LOUDNORM_I` | `-27` | Card loudness target (LUFS) — see below |
+| `LOUDNORM_TP` | `-1.5` | Max true peak (dBTP) |
+| `LOUDNORM_LRA` | `11` | Loudness range |
+| `LOUDNORM_FLOOR` | `-60` | At/below this measured LUFS a card counts as silent and its audio is left alone |
+
+## Card loudness
+
+Every rendered card gets a **two-pass `loudnorm`** after render and before it is
+published: one measurement run, then a second that applies an exact linear gain.
+Video is stream-copied, so it costs an audio re-encode (~1s), not a re-render.
+
+This exists because a card's level otherwise tracks whatever rotating music bed
+it happened to pick — junctions measured **-19.9 LUFS against programming at
+-24.8**, i.e. ~5 LU hot, on every single junction. ErsatzTV does not fix this at
+playout: its `NormalizeLoudnessMode` is deliberately `Off` so films keep their
+dynamic range, which means each card has to arrive correct on its own.
+
+Two details worth knowing before changing any of it:
+
+- **`linear=true` matters.** Single-pass `loudnorm` is adaptive — it estimates
+  as it goes, overshoots, and compresses. Two-pass linear applies one constant
+  gain, so a card's own dynamics are untouched (verified: a 0.6 LU-range card
+  stays 0.6 LU after correction).
+- **The floor is not optional.** The Ident is a real AAC track carrying digital
+  silence (-70 LUFS). Normalizing that would amplify the noise floor by ~40 dB,
+  so anything under `LOUDNORM_FLOOR` is passed through untouched.
+
+Keep these in step with `station-processor`'s matching vars so all filler —
+rendered cards and ingested spots alike — lands on one level.
 
 ## Editing & styling — Remotion Studio
 

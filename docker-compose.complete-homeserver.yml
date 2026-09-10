@@ -265,6 +265,15 @@ services:
       - jellyfin-cache:/cache
       - ./media:/data/media # All media in one folder
     devices:
+      # Passing the device is NOT enough -- Jellyfin shipped with
+      # HardwareAccelerationType=none, so every transcode (on-demand AND the
+      # ErsatzTV Live TV channels, which Jellyfin transcodes a SECOND time on
+      # top of ErsatzTV's own pass) ran on libx264 and pegged the CPU. Set in
+      # Dashboard -> Playback -> Transcoding: VAAPI, /dev/dri/renderD128.
+      # Live TV needs its own switch: Dashboard -> Live TV -> the M3U tuner ->
+      # "Allow hardware transcoding", or it stays on software regardless.
+      # Both live in the jellyfin-config volume, not here -- re-check them if
+      # that volume is ever rebuilt.
       - /dev/dri:/dev/dri # Hardware transcoding (Intel/AMD GPU)
     restart: unless-stopped
     networks:
@@ -309,7 +318,15 @@ services:
       - /dev/dri:/dev/dri # iGPU passthrough for VAAPI (required by the profile above)
     volumes:
       - ersatztv-config:/root/.local/share/ersatztv
-      - ./media:/media:ro # Same shared media as Jellyfin/Tunarr (read-only)
+      # Same shared media as Jellyfin/Tunarr (read-only). NOTE: ErsatzTV only
+      # reads these files directly if a Path Replacement maps Jellyfin's view of
+      # them onto this mount -- Settings -> Media Sources -> Jellyfin:
+      #   /data/media  ->  /media
+      # Without it ETV can't resolve the Jellyfin paths it stores, and silently
+      # streams every channel's source over HTTP from Jellyfin instead (two
+      # connections per channel, seeks as HTTP range requests on the spinning
+      # disk). Lives in the ersatztv-config volume, not here.
+      - ./media:/media:ro
     restart: unless-stopped
     networks:
       - media-network
@@ -332,6 +349,8 @@ services:
       # Configure Media Sources inside Pinchflat:
       #   music videos  -> /downloads/musicvideos       (ErsatzTV reads directly)
       #   commercials   -> /downloads/incoming/commercials  (station-processor cleans them up)
+      #   indie animation -> /downloads/incoming/animation   (station-processor routes it:
+      #                     shorts -> filler, episode-length -> staging/ for the TV library)
       # ErsatzTV reads these via its read-only ./media mount above.
       - ./media/station:/downloads
     restart: unless-stopped
@@ -345,6 +364,8 @@ services:
   # channel-ready spots to ./media/station/library/* for ErsatzTV filler.
   #   incoming/commercials -> split + normalize
   #   incoming/bumpers     -> normalize only
+  #   incoming/animation   -> route by duration: shorts become filler, longer
+  #                           pieces are staged for the TV library by hand
   # Originals are archived to ./media/station/processed (nothing is deleted).
   #############################################################################
   station-processor:
@@ -357,13 +378,25 @@ services:
       - TARGET_WIDTH=1920 # normalize everything to one resolution...
       - TARGET_HEIGHT=1080
       - TARGET_FPS=30 # ...and one framerate, so filler never letterboxes/judders
-      - LOUDNORM_I=-16 # target loudness (LUFS) - match whatever your shows sit at
+      # Filler loudness. Two-pass loudnorm (measure, then apply a linear gain),
+      # so these land on target instead of overshooting it the way single-pass
+      # does. -27 is measured from the library, not a broadcast spec: programming
+      # medians -24.8 LUFS, and flat-level filler has to sit a couple LU under
+      # dynamic programming to *feel* equal. Raise toward -25 if filler now feels
+      # too quiet. Programming itself is deliberately NOT normalized at playout
+      # (ErsatzTV NormalizeLoudnessMode=Off) so films keep their dynamic range.
+      - LOUDNORM_I=-27 # target loudness (LUFS)
       - LOUDNORM_TP=-1.5 # max true peak (dBTP)
       - LOUDNORM_LRA=11 # loudness range
+      - LOUDNORM_FLOOR=-60 # at/below this a clip is "silent" and left untouched
       - MIN_SPOT_SECONDS=5 # drop split fragments shorter than this
       - MAX_SPOT_SECONDS=180 # drop split fragments longer than this
+      # "route" lanes (animation): at or under this it's an interstitial and
+      # gets normalized into library/; over it, it's an episode and goes to
+      # staging/ untouched for hand-placement into the TV library.
+      - ROUTE_MAX_SECONDS=300
     volumes:
-      - ./media/station:/station # incoming/, library/, processed/, logs/
+      - ./media/station:/station # incoming/, library/, staging/, processed/, logs/
     restart: unless-stopped
     networks:
       - media-network
@@ -418,6 +451,15 @@ services:
       # - MUSIC_SRC=
       - OUTPUT=/station/library/junctions/now-next-later.mp4
       - FEATURE_DIR=/station/library/feature
+      # Card loudness. Without this a card lands wherever its rotating music bed
+      # sits (junctions measured -19.9 LUFS against programming at -24.8), so
+      # every junction was 6-10 LU hotter than the shows around it. Two-pass
+      # loudnorm with a linear gain; keep in step with station-processor so all
+      # filler matches. The Ident is silent by design and is skipped via FLOOR.
+      - LOUDNORM_I=-27
+      - LOUDNORM_TP=-1.5
+      - LOUDNORM_LRA=11
+      - LOUDNORM_FLOOR=-60
     devices:
       # iGPU passthrough so Chromium can rasterize on the GPU and hardware-decode
       # b-roll. Shared with ErsatzTV's VAAPI transcoding — renders are hourly and
