@@ -4,9 +4,11 @@ Everything that touches ErsatzTV's database.
 Reads: the library (movies, shows, episodes with genres/tags), collection
 membership, and the current playout window.
 
-Writes: `CollectionItem` rows, and nothing else. That restraint is deliberate --
-collections are a two-column join table, and ErsatzTV tracks a collection etag
-so it notices membership changes and rebuilds affected playouts by itself. Its
+Writes: `CollectionItem` rows, and nothing else. (Dead-air repair goes through
+ErsatzTV's own HTTP API instead -- see __main__.clear_dead_air.) That restraint
+is deliberate -- collections are a two-column join table, and ErsatzTV tracks
+a collection etag so it notices membership changes and rebuilds affected
+playouts by itself. Its
 scheduling tables, by contrast, are stateful and version-specific. So blocks,
 templates, schedules and filler presets stay exactly as you configured them in
 the UI; they simply consume the collections we keep fresh.
@@ -188,6 +190,35 @@ class ErsatzTV:
             row["Id"] for row in self.db.execute(
                 f"SELECT Id FROM MediaItem WHERE State IN ({placeholders})",
                 self.UNPLAYABLE_STATES,
+            )
+        }
+
+    def media_count(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM MediaItem").fetchone()[0]
+
+    def dead_air(self) -> dict[str, int]:
+        """
+        Channel number -> upcoming playout slots pointing at unplayable media.
+
+        Sweeping a collection doesn't reach these. A `show` collection keeps
+        the show when only some of its episodes are deleted, so nothing
+        changes the etag and ErsatzTV never rebuilds. And a rebuild alone
+        wouldn't help: ErsatzTV schedules FileNotFound episodes like any
+        other until they are emptied from its trash.
+        """
+        placeholders = ",".join("?" * len(self.UNPLAYABLE_STATES))
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        return {
+            row["channel"]: row["slots"]
+            for row in self.db.execute(
+                "SELECT ch.Number AS channel, COUNT(*) AS slots "
+                "FROM PlayoutItem pi "
+                "JOIN Playout p ON p.Id = pi.PlayoutId "
+                "JOIN Channel ch ON ch.Id = p.ChannelId "
+                "JOIN MediaItem mi ON mi.Id = pi.MediaItemId "
+                f"WHERE pi.Finish > ? AND mi.State IN ({placeholders}) "
+                "GROUP BY ch.Number",
+                (now, *self.UNPLAYABLE_STATES),
             )
         }
 

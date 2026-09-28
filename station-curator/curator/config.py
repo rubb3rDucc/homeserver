@@ -236,6 +236,7 @@ def _flag(name: str, default: bool) -> bool:
 @dataclass(frozen=True)
 class Env:
     ersatztv_db: Path
+    ersatztv_url: str
     state_db: Path
     charters: Path
     proposals: Path
@@ -273,6 +274,7 @@ def load_env() -> Env:
     env = os.environ.get
     return Env(
         ersatztv_db=Path(env("ERSATZTV_DB", "/ersatztv/ersatztv.sqlite3")),
+        ersatztv_url=env("ERSATZTV_URL", "http://ersatztv:8409").rstrip("/"),
         state_db=Path(env("CURATOR_STATE_DB", "/state/curator.sqlite3")),
         charters=Path(env("CURATOR_CHARTERS", "/app/charters.toml")),
         proposals=Path(env("CURATOR_PROPOSALS", "/state/proposals.md")),

@@ -480,8 +480,10 @@ services:
   # station-curator/charters.toml, keeps rerun blocks free of finales and
   # two-parters, and shortlists new titles to /state/proposals.md.
   #
-  # Its ONLY write is collection membership; ErsatzTV etags collections and
+  # Its ONLY DB write is collection membership; ErsatzTV etags collections and
   # rebuilds affected playouts itself, so schedules/blocks/filler are untouched.
+  # The one exception is dead air: a channel still booked onto deleted files
+  # gets ErsatzTV's trash emptied and its playout reset via ETV's HTTP API.
   # Dry run first:  docker compose ... run --rm -e CURATOR_DRY_RUN=1 station-curator
   #############################################################################
   station-curator:
@@ -493,6 +495,8 @@ services:
       - CURATOR_INTERVAL=21600 # 6h; the library changes slowly
       - CURATOR_DRY_RUN=${CURATOR_DRY_RUN:-false}
       - ERSATZTV_DB=/ersatztv/ersatztv.sqlite3
+      # Dead-air repair: empty_trash + per-channel playout reset.
+      - ERSATZTV_URL=http://ersatztv:8409
       # Watch data -> rests anything you just watched on demand.
       - JELLYFIN_URL=http://jellyfin:8096
       - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}

@@ -12,8 +12,9 @@ dependencies** — stdlib Python throughout, including the LLM call.
 
 ## How it fits the stack
 
-The curator's only write is `CollectionItem` — collection membership. Nothing
-else in ErsatzTV is touched.
+The curator's only database write is `CollectionItem` — collection membership.
+The one other thing it does to ErsatzTV is repair dead air, through ErsatzTV's
+own HTTP API (see *Safety notes*).
 
 ```
 charters.toml ──► curator ──► ErsatzTV Collections ──► Blocks / Schedules ──► Channels
@@ -40,7 +41,8 @@ configured, and simply consume collections that are now kept fresh.
 3. **Read the library**, classify shows as serialised or episodic, and judge
    every episode for rerun safety.
 4. **Per channel: retire, then fill.**
-5. **Shortlist acquisitions**, write `proposals.md`, push a summary.
+5. **Repair dead air** — rebuild any channel still booked onto deleted files.
+6. **Shortlist acquisitions**, write `proposals.md`, push a summary.
 
 ## Staleness
 
@@ -285,7 +287,19 @@ touching ErsatzTV.
   removed from any managed collection, ignored as candidates, and — since they
   aren't really owned — proposable again. Empty series are listed in the report
   so you can fetch the episodes or delete the folder.
-- **Writes are confined to `CollectionItem`.** Collections are a two-column
+- **Deleted episodes still booked on a channel are rebuilt away.** Sweeping
+  can't reach these: a `show` collection keeps the series when only some of
+  its episodes are deleted, so no etag changes and ErsatzTV never rebuilds —
+  the already-built ~48h window keeps airing the missing files as dead air. And
+  a rebuild alone doesn't help, because ErsatzTV schedules `FileNotFound`
+  episodes like any other until they leave its trash. So each cycle, any
+  channel with upcoming slots on unplayable media gets ErsatzTV's trash
+  emptied (`POST /api/maintenance/empty_trash`), then its playout reset
+  (`POST /api/channels/{n}/playout/reset`), then Jellyfin's guide refreshed.
+  A reset reshuffles that channel's lineup from now on. If more than 25% of the
+  library is unplayable at once, that's a missing drive, not deletions — the
+  curator logs an error and leaves the trash alone.
+- **Database writes are confined to `CollectionItem`.** Collections are a two-column
   join table; scheduling tables are stateful and version-specific, so they're
   left alone.
 - ErsatzTV's database is WAL-mode, so short writes coexist with the running

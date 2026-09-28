@@ -10,7 +10,8 @@ One cycle, in order:
   3. read the library; classify shows as serial/episodic; judge every
      episode for rerun safety
   4. per channel: retire what's gone stale, then fill back to target
-  5. shortlist acquisitions, write proposals.md, push a summary
+  5. rebuild any channel still booked onto deleted files (dead air)
+  6. shortlist acquisitions, write proposals.md, push a summary
 
 Collections come in three shapes, matching how you already use them:
 
@@ -39,6 +40,7 @@ from .ersatztv import ErsatzTV
 from .jellyfin import fetch as fetch_watch
 from .ledger import Ledger, utcnow
 from .llm import LLM
+from .net import HttpError, request
 
 logging.basicConfig(
     level=logging.INFO,
@@ -632,6 +634,66 @@ def _push_pages(proposed, total, names=None, per_page=8, max_pages=8):
 
 
 # --------------------------------------------------------------------------- #
+# Dead air
+# --------------------------------------------------------------------------- #
+# More than this share of the library unplayable at once is not deletions --
+# it's the media drive failing to mount, or Jellyfin mid-rescan. Emptying the
+# trash then would forget the whole library, so hold off and shout instead.
+DEAD_AIR_MAX_UNPLAYABLE = 0.25
+
+
+def clear_dead_air(env, etv):
+    """
+    Rebuild any channel whose upcoming schedule points at deleted files.
+
+    Order matters: empty the trash first, or the reset books the same
+    FileNotFound episodes straight back in. Emptying it also drops their
+    playout rows, so the affected channels have to be read beforehand.
+    """
+    dead = etv.dead_air()
+    if not dead:
+        return
+    unplayable, total = len(etv.unplayable()), etv.media_count()
+    listing = ", ".join(f"ch{ch} ({n})" for ch, n in sorted(dead.items()))
+    if total and unplayable / total > DEAD_AIR_MAX_UNPLAYABLE:
+        log.error("dead air: %d of %d items unplayable -- looks like missing "
+                  "storage, not deletions; leaving the trash alone. "
+                  "Affected: %s", unplayable, total, listing)
+        return
+    log.warning("dead air: %d slot(s) point at deleted files -- %s",
+                sum(dead.values()), listing)
+    if env.dry_run:
+        return
+    try:
+        request(f"{env.ersatztv_url}/api/maintenance/empty_trash",
+                method="POST", timeout=300)
+        for number in sorted(dead):
+            request(f"{env.ersatztv_url}/api/channels/{number}/playout/reset",
+                    method="POST", timeout=120)
+            log.info("dead air: ch%s rebuilt", number)
+    except HttpError as exc:
+        log.error("dead air: repair failed (%s)", exc)
+        return
+    refresh_guide(env)
+
+
+def refresh_guide(env):
+    """Have Jellyfin re-read the XMLTV now, not at its next scheduled pull."""
+    if not env.jellyfin_key:
+        return
+    headers = {"X-Emby-Token": env.jellyfin_key}
+    try:
+        tasks = request(f"{env.jellyfin_url}/ScheduledTasks", headers=headers)
+        task = next((t for t in tasks or [] if t.get("Key") == "RefreshGuide"),
+                    None)
+        if task:
+            request(f"{env.jellyfin_url}/ScheduledTasks/Running/{task['Id']}",
+                    method="POST", headers=headers)
+    except HttpError as exc:
+        log.warning("jellyfin guide refresh failed (%s)", exc)
+
+
+# --------------------------------------------------------------------------- #
 # Cycle
 # --------------------------------------------------------------------------- #
 def cycle(env, channels):
@@ -718,6 +780,10 @@ def cycle(env, channels):
             proposed += shortlist(channel, env, library, ledger, llm, owned,
                                   row["playing"] if row else [],
                                   suggest_budget)
+
+        # After curation, so channels whose collections just changed have
+        # already been rebuilt by ErsatzTV and only what's still dead remains.
+        clear_dead_air(env, etv)
 
         sources = {c.discover.source for c in channels if c.discover.enabled}
         if "llm" in sources and not llm.enabled:
